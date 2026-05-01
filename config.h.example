@@ -1,0 +1,67 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// ============================================================================
+// Copy this file to config.h. Secrets live in secrets.h (also gitignored).
+// Both files are gitignored — never commit them.
+// ============================================================================
+
+#include "secrets.h"
+
+// ============================================================================
+// LOCATION
+// ============================================================================
+
+const float LATITUDE = 52.0705;    // Delft, Netherlands
+const float LONGITUDE = 4.3007;
+
+// ============================================================================
+// TIMING CONFIGURATION
+// ============================================================================
+
+const unsigned long SLEEP_DURATION = 15 * 60;  // seconds
+const int NIGHT_START = 23;  // 24-hour format
+const int NIGHT_END = 7;     // 24-hour format
+
+// ============================================================================
+// TRAIN CONFIGURATION
+// ============================================================================
+
+const char* STATION_CODE_CENTRAL = "GVC";
+const char* STATION_CODE_HS = "GV";
+const char* STATION_NAME_CENTRAL = "Centraal";
+const char* STATION_NAME_HS = "HS";
+const char* TRAIN_DESTINATION = "breda";
+
+// ============================================================================
+// WEATHER & DISPLAY CONSTANTS
+// ============================================================================
+
+const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ string
+
+// ============================================================================
+// OPTIONAL: DEBUG LOGGING
+// ============================================================================
+// Set to 1 to enable Serial output at 115200 baud. Default 0 saves ~200 ms
+// of wake time and avoids UART tx blocking when no monitor is attached.
+// #define DEBUG_LOG 1
+
+// ============================================================================
+// OPTIONAL: STATIC IP
+// ============================================================================
+// Skips DHCP (~1–2 s faster connect, less radio time).
+// If any of the four are missing, DHCP is used.
+// #define WIFI_STATIC_IP "192.168.1.42"
+// #define WIFI_GATEWAY   "192.168.1.1"
+// #define WIFI_SUBNET    "255.255.255.0"
+// #define WIFI_DNS       "192.168.1.1"
+
+// ============================================================================
+// OPTIONAL: REFRESH STRATEGY
+// ============================================================================
+// Number of wakes between full e-ink refreshes. In between, partial updates
+// are used (much lower energy + faster). Full refreshes clear ghosting.
+// Default 4 = once per hour at SLEEP_DURATION=900.
+// #define FULL_REFRESH_EVERY 4
+
+#endif

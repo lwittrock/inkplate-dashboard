@@ -164,12 +164,14 @@ void sunDotForT(int xLeft, int xRight, int baselineY, int rise, float t,
                 int& outX, int& outY) {
   if (t < 0.0f) t = 0.0f;
   if (t > 1.0f) t = 1.0f;
-  int cx = (xLeft + xRight) / 2;
-  int rx = (xRight - xLeft) / 2;
-  int ry = rise;
-  float angle = PI * t;
-  outX = cx - (int)(rx * cosf(angle) + 0.5f);
-  outY = baselineY - (int)(ry * sinf(angle) + 0.5f);
+  // X is linear in time so the dot moves uniformly across the horizon
+  // (a cosine parametrization compresses the last ~7% of time into the
+  // last ~2% of horizontal space, making "1 h before sunset" look like
+  // "already at the horizon"). Y is then derived from the half-circle
+  // equation so the dot still lands on the drawn arc at the endpoints.
+  float u = 2.0f * t - 1.0f;                                       // -1..+1
+  outX = xLeft + (int)(t * (float)(xRight - xLeft) + 0.5f);
+  outY = baselineY - (int)((float)rise * sqrtf(1.0f - u * u) + 0.5f);
 }
 
 // ============================================================================
@@ -511,7 +513,9 @@ void drawCurrentWeather(float temp, int weatherCode, float wind,
 
   display.setFont(&Inter_Regular9pt7b);
   char windStr[24];
-  snprintf(windStr, sizeof(windStr), "%d km/h %s",
+  // "from X" matches the cardinalCompass convention (direction wind comes
+  // from), so the text and the downwind-pointing arrow no longer contradict.
+  snprintf(windStr, sizeof(windStr), "%d km/h from %s",
            (int)(wind + 0.5f), cardinalCompass(windBearing));
   display.setCursor(227, 249);
   display.print(windStr);
@@ -585,6 +589,29 @@ void drawTempCurve(const float hourly[], int n,
                              : (float)(sr + 24 * 60 - now) / 60.0f;
       drawGuide(off, "sunrise");
     }
+  }
+
+  // --- Y-axis temp ticks every 5°C ---
+  // Skipped if they would visually collide with a min/max marker (within
+  // 10 px) so the chart doesn't get visually crowded near the extremes.
+  {
+    display.setFont(&Inter_Regular9pt7b);
+    int firstTick = (int)ceilf(tLo / 5.0f) * 5;
+    int lastTick  = (int)floorf(tHi / 5.0f) * 5;
+    int yMinMark  = yForTemp(hourly[minIdx]);
+    int yMaxMark  = yForTemp(hourly[maxIdx]);
+    for (int v = firstTick; v <= lastTick; v += 5) {
+      int gy = yForTemp((float)v);
+      if (abs(gy - yMinMark) < 10 || abs(gy - yMaxMark) < 10) continue;
+      display.drawFastHLine(x0 - 2, gy, 2, BLACK);
+      char buf[6];
+      snprintf(buf, sizeof(buf), "%d", v);
+      int16_t bx, by; uint16_t bw, bh;
+      display.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
+      display.setCursor(x0 - 5 - bw, gy + bh / 2);
+      display.print(buf);
+    }
+    display.setFont();
   }
 
   // --- Curve ---
@@ -750,8 +777,8 @@ void drawRainChart(float rainData[], char timeLabels[][20], int rainCount) {
 // Each cell is centered on its midpoint cMid = cellX + 51.
 //   - Day name "Mon" at (cMid, 340) in bold
 //   - 64×64 weather icon centered at (cMid − 32, 350) — Step 10 swaps for 48×48
-//   - Range bar at y=410 from cMid−40 to cMid+40 against shared scale [-2°, +25°]
-//   - Bold max label above right dot at y=404, regular min label below left dot at y=424
+//   - Range bar at y=418 from cMid−40 to cMid+40 against shared scale [-2°, +25°]
+//   - Bold max label above right dot at y=410, regular min label below left dot at y=436
 void drawWeekForecast(DayForecast forecast[], int forecastCount) {
   const int CELL_W   = 102;
   const int X0       = 40;
@@ -777,7 +804,7 @@ void drawWeekForecast(DayForecast forecast[], int forecastCount) {
                       forecast[i].useSunnyVariant);
 
     // --- Range bar ---
-    const int barY  = 410;
+    const int barY  = 418;
     const int barL  = cMid - 40;
     const int barR  = cMid + 40;
     const int barW  = barR - barL;
@@ -807,14 +834,14 @@ void drawWeekForecast(DayForecast forecast[], int forecastCount) {
     snprintf(buf, sizeof(buf), "%d", tMax);
     display.setFont(&Inter_Bold9pt7b);
     display.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
-    display.setCursor(xMax - bw / 2, 404);
+    display.setCursor(xMax - bw / 2, 410);
     display.print(buf);
 
     // --- Min label (regular) below left dot ---
     snprintf(buf, sizeof(buf), "%d", tMin);
     display.setFont(&Inter_Regular9pt7b);
     display.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
-    display.setCursor(xMin - bw / 2, 424);
+    display.setCursor(xMin - bw / 2, 436);
     display.print(buf);
   }
 

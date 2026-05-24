@@ -116,6 +116,28 @@ int pickDepartures(const Departure ctr[], int nCtr,
   bool ctrUsed[12] = {};
   bool hsUsed[12]  = {};
 
+  // Fallback: when the Centraal fetch returned 0 trips (e.g. transient
+  // Trip Planner failure), promote HS to primary so the Departures section
+  // still has content. Picker's normal substitution logic only triggers on
+  // *bad* CTR trips — with no CTR trips at all, the outer loop below
+  // exits immediately and the section would render empty even though HS
+  // data is right here.
+  if (nCtr == 0) {
+    int picked = 0;
+    for (int i = 0; i < nHs && i < 12 && picked < 3; i++) {
+      if (hs[i].cancelled) continue;
+      time_t t = parseISOToLocal(hs[i].plannedDepartureISO);
+      if (t == 0 || t < now + 5 * 60) continue;            // must be reachable
+      if (picked > 0 &&
+          strcmp(hs[i].plannedDepartureISO,
+                 out[picked - 1].plannedDepartureISO) == 0) continue;  // dedup
+      out[picked] = hs[i];
+      strlcpy(out[picked].note, "Centraal unavailable", sizeof(out[picked].note));
+      picked++;
+    }
+    return picked;
+  }
+
   int picked = 0;
   while (picked < 3) {
     // Find next un-picked Centraal trip departing after the previous pick.

@@ -290,10 +290,19 @@ int fetchTrips(const char* fromStation, const char* toStation,
   ld["plannedDateTime"] = true;
   ld["actualDateTime"] = true;
 
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, http.getStream(),
-                                             DeserializationOption::Filter(filter));
+  // Slurp the full body into a String before parsing. Streaming straight
+  // from getStream() over WiFiClientSecure intermittently returns
+  // IncompleteInput when the TLS buffer drains mid-parse on the ~90 KB
+  // Trip Planner payload — same issue that pushed fetchOpenMeteo to slurp.
+  // The Filter still keeps the parsed JsonDoc small (~5 KB) so heap peak
+  // is dominated by the transient String, not the parse tree.
+  String response = http.getString();
   http.end();
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, response,
+                                             DeserializationOption::Filter(filter));
+  response = String();  // free the ~90 KB buffer immediately
 
   if (err) {
     DBG("Trip Planner JSON err: "); DBGLN(err.c_str());

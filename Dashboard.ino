@@ -100,6 +100,25 @@ Inkplate display(INKPLATE_1BIT);
 // Counter is 0 on cold boot — the cold boot then renders a full refresh.
 RTC_DATA_ATTR uint32_t wakeCounter = 0;
 
+// Last-known-good Buienradar values, persisted across deep sleep. If a
+// fetch fails on a given wake we render from cache rather than going back
+// to Open-Meteo or showing an empty section. nowValid / rainValid are
+// independent — a 250-byte raintext failing does not invalidate the
+// 5 current-conditions fields, and vice versa.
+struct BuienradarCache {
+  bool  nowValid;
+  float temp;
+  int   weatherCode;
+  float wind;
+  int   windBearing;
+
+  bool  rainValid;
+  int   rainCount;
+  float rainMmh[24];
+  char  rainLabels[24][6];   // "HH:MM\0"
+};
+RTC_DATA_ATTR BuienradarCache brCache = {};
+
 // Force a full refresh every Nth wake to clear ghosting from partial updates.
 // With SLEEP_DURATION=900 (15 min), 4 = once per hour.
 #ifndef FULL_REFRESH_EVERY
@@ -132,27 +151,66 @@ void setup() {
   handleNightMode();
   DBGLN("Night mode check passed");
 
-  // Fetch weather, forecast, and rain in a single Open-Meteo call
-  DBGLN("Fetching Open-Meteo...");
+  // Fetch the forecast (hourly + daily) from Open-Meteo. Current weather
+  // and 2h rain nowcast come from Buienradar — see fetchBuienradar* below.
+  DBGLN("Fetching Open-Meteo (forecast only)...");
   float temp = 0, wind = 0;
   int weatherCode = 0;
   WeatherExtras extras = {};
   DayForecast weekForecast[7];
   int forecastCount = 0;
-  float rainData[12];
-  char timeLabels[12][20];
+  float rainData[24];
+  char timeLabels[24][20];
   int rainCount = 0;
+  bool forecastOk = fetchOpenMeteo(extras, weekForecast, forecastCount);
+  DBG("Forecast: "); DBGLN(forecastOk ? "OK" : "FAIL");
+
+  // Buienradar — current conditions. Live KNMI station observations.
+  DBGLN("Fetching Buienradar (now)...");
+  bool nowFetched = fetchBuienradarNow(temp, wind, weatherCode, extras.windDirection);
+  bool weatherOk = false;
+  if (nowFetched) {
+    brCache.nowValid    = true;
+    brCache.temp        = temp;
+    brCache.weatherCode = weatherCode;
+    brCache.wind        = wind;
+    brCache.windBearing = extras.windDirection;
+    weatherOk = true;
+  } else if (brCache.nowValid) {
+    temp                  = brCache.temp;
+    weatherCode           = brCache.weatherCode;
+    wind                  = brCache.wind;
+    extras.windDirection  = brCache.windBearing;
+    weatherOk = true;
+    DBGLN("BR now: using RTC cache");
+  }
+
+  // Buienradar — 2h rain nowcast.
+  DBGLN("Fetching Buienradar (rain)...");
+  bool rainFetched = fetchBuienradarRain(rainData, timeLabels, rainCount);
   bool rainOk = false;
-  bool weatherOk = fetchOpenMeteo(
-    temp, wind, weatherCode, extras,
-    weekForecast, forecastCount,
-    rainData, timeLabels, rainCount, rainOk);
-  DBG("Weather: "); DBG(weatherOk ? "OK" : "FAIL");
-  DBG(", Rain: "); DBGLN(rainOk ? "OK" : "FAIL");
+  if (rainFetched) {
+    brCache.rainValid = true;
+    brCache.rainCount = rainCount;
+    for (int i = 0; i < rainCount && i < 24; i++) {
+      brCache.rainMmh[i] = rainData[i];
+      strlcpy(brCache.rainLabels[i], timeLabels[i], 6);
+    }
+    rainOk = true;
+  } else if (brCache.rainValid) {
+    rainCount = brCache.rainCount;
+    for (int i = 0; i < rainCount && i < 24; i++) {
+      rainData[i] = brCache.rainMmh[i];
+      strlcpy(timeLabels[i], brCache.rainLabels[i], 20);
+    }
+    rainOk = true;
+    DBGLN("BR rain: using RTC cache");
+  }
+
   if (weatherOk) {
-    DBG("Temp="); DBG(temp);
-    DBG(" Wind="); DBG(wind);
-    DBG(" Code="); DBGLN(weatherCode);
+    DBG("Now: temp="); DBG(temp);
+    DBG(" wind="); DBG(wind);
+    DBG(" code="); DBGLN(weatherCode);
   }
 
   // Fetch train data from Central
@@ -196,7 +254,7 @@ void setup() {
   updateDisplay(
     temp, wind, weatherCode, weatherOk, extras,
     rainData, timeLabels, rainCount, rainOk,
-    weekForecast, forecastCount, weatherOk,
+    weekForecast, forecastCount, forecastOk,
     departures, departureCount
   );
   DBGLN("Display updated!");

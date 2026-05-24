@@ -89,37 +89,27 @@ int httpGetWithRetry(HTTPClient &http, int maxRetries = 3) {
   return -1;
 }
 
-// Combined Open-Meteo call: current weather + 7-day forecast + 15-min rain.
-// One TLS handshake, one JSON parse. rainOk is set independently of the
-// overall return so a missing minutely block doesn't fail the whole fetch.
+// Open-Meteo call: 24h hourly temp curve + 7-day daily forecast only.
+// Current conditions and 2-hour rain now come from Buienradar
+// (fetchBuienradarNow / fetchBuienradarRain), which is observation-based
+// and avoids OM's model-derived "phantom cloud" artefacts for NL.
 bool fetchOpenMeteo(
-    float &temp,
-    float &wind,
-    int &currentWeatherCode,
     WeatherExtras &extras,
     DayForecast forecast[],
-    int &forecastCount,
-    float rainData[],
-    char timeLabels[][20],
-    int &rainCount,
-    bool &rainOk
+    int &forecastCount
   ) {
-  rainOk = false;
-  rainCount = 0;
-  extras.windDirection = 0;
   extras.hourlyCount = 0;
+  forecastCount = 0;
 
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(8000);
 
-  char url[640];
+  char url[512];
   snprintf(url, sizeof(url),
     "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-    "&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m"
     "&hourly=temperature_2m&forecast_hours=24"
-    "&minutely_15=precipitation&forecast_minutely_15=12"
     "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,"
     "sunshine_duration,daylight_duration,precipitation_sum,precipitation_hours,snowfall_sum,"
     "sunrise,sunset"
@@ -147,13 +137,6 @@ bool fetchOpenMeteo(
     DBG("Response length: "); DBGLN(response.length());
     return false;
   }
-
-  // Current weather
-  temp = doc["current"]["temperature_2m"] | 0.0f;
-  wind = doc["current"]["wind_speed_10m"] | 0.0f;
-  currentWeatherCode = doc["current"]["weather_code"] | 0;
-
-  extras.windDirection = doc["current"]["wind_direction_10m"] | 0;
 
   // 24-hour temperature curve for the dry-state right panel.
   JsonArray hourly = doc["hourly"]["temperature_2m"];
@@ -225,21 +208,207 @@ bool fetchOpenMeteo(
     }
   }
 
-  // 15-min rain
-  JsonArray rain = doc["minutely_15"]["precipitation"];
-  JsonArray times = doc["minutely_15"]["time"];
-  if (!rain.isNull() && !times.isNull()) {
-    rainCount = min(12, (int)rain.size());
-    for (int i = 0; i < rainCount; i++) {
-      rainData[i] = rain[i] | 0.0f;
-      const char* t = times[i].as<const char*>();
-      if (t) strlcpy(timeLabels[i], t, 20);
-      else   timeLabels[i][0] = 0;
-    }
-    rainOk = (rainCount > 0);
+  return true;
+}
+
+// ============================================================================
+// BUIENRADAR — live KNMI station observations + radar nowcast
+// ============================================================================
+
+// The feed exposes the weather icon as a URL (".../weather/30x30/aa.png")
+// rather than a structured code field. Extract the filename stem, lowercase
+// it, and collapse doubled letters ("aa" → "a") so categorizeBuienradarIcon
+// sees a single-letter input. "cc" is kept as-is because it's a distinct
+// entry in the mapping table.
+// Writes "" into `out` if the URL doesn't match the expected shape.
+static void extractBuienradarIconCode(const char* iconurl, char* out, size_t outSize) {
+  if (outSize > 0) out[0] = 0;
+  if (!iconurl || outSize < 2) return;
+  const char* slash = strrchr(iconurl, '/');
+  const char* dot   = strrchr(iconurl, '.');
+  if (!slash || !dot || dot <= slash + 1) return;
+  size_t len = (size_t)(dot - slash - 1);
+  if (len == 0 || len >= outSize) return;
+  memcpy(out, slash + 1, len);
+  out[len] = 0;
+  for (size_t i = 0; out[i]; i++) {
+    if (out[i] >= 'A' && out[i] <= 'Z') out[i] += 32;
+  }
+  if (out[0] && out[1] == out[0] && out[2] == 0 && out[0] != 'c') {
+    out[1] = 0;
+  }
+}
+
+// Fetch the master JSON feed, pick the closest non-stale station with a
+// usable icon, and return its current readings translated into the
+// dashboard's internal types. Failure leaves the output params untouched
+// so the caller's RTC cache fallback can take over.
+bool fetchBuienradarNow(float &temp, float &wind,
+                        int &weatherCode, int &windBearing) {
+  DBG("BR now heap before: "); DBGLN(ESP.getFreeHeap());
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(8000);
+
+  if (!http.begin(client, BUIENRADAR_FEED_URL)) return false;
+
+  int code = httpGetWithRetry(http);
+  if (code != 200) {
+    DBG("BR now HTTP fail: "); DBGLN(code);
+    http.end();
+    return false;
   }
 
+  // Slurp before parse — same TLS-drain reasoning as fetchOpenMeteo /
+  // fetchTrips. JsonDoc itself stays small (we only parse the array
+  // structure, not every nested string).
+  String response = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, response);
+  response = String();
+  if (err) {
+    DBG("BR now JSON err: "); DBGLN(err.c_str());
+    return false;
+  }
+
+  JsonArray stations = doc["actual"]["stationmeasurements"];
+  if (stations.isNull()) {
+    DBGLN("BR now: no stationmeasurements[]");
+    return false;
+  }
+
+  // Find current time for the freshness filter. Both device and Buienradar
+  // run on Amsterdam local time, so wall-clock comparison is fine.
+  struct tm tnow;
+  bool haveNow = getLocalTime(&tnow);
+  time_t nowEpoch = haveNow ? mktime(&tnow) : 0;
+
+  JsonObject best;
+  float bestDist = 9999.0f;
+
+  for (JsonObject s : stations) {
+    char iconBuf[4];
+    extractBuienradarIconCode(s["iconurl"] | (const char*)nullptr,
+                              iconBuf, sizeof(iconBuf));
+    if (!iconBuf[0]) continue;
+    if (s["temperature"].isNull()) continue;
+
+    if (haveNow) {
+      const char* ts = s["timestamp"] | (const char*)nullptr;  // "YYYY-MM-DDTHH:MM:SS"
+      if (ts && strlen(ts) >= 19) {
+        struct tm t = {};
+        t.tm_year = (ts[0]-'0')*1000 + (ts[1]-'0')*100 + (ts[2]-'0')*10 + (ts[3]-'0') - 1900;
+        t.tm_mon  = (ts[5]-'0')*10 + (ts[6]-'0') - 1;
+        t.tm_mday = (ts[8]-'0')*10 + (ts[9]-'0');
+        t.tm_hour = (ts[11]-'0')*10 + (ts[12]-'0');
+        t.tm_min  = (ts[14]-'0')*10 + (ts[15]-'0');
+        t.tm_sec  = (ts[17]-'0')*10 + (ts[18]-'0');
+        t.tm_isdst = -1;
+        time_t tsEpoch = mktime(&t);
+        if (tsEpoch > 0 &&
+            (nowEpoch - tsEpoch) > (long)BUIENRADAR_STALE_MIN * 60) continue;
+      }
+    }
+
+    float lat = s["lat"] | 0.0f;
+    float lon = s["lon"] | 0.0f;
+    float d = haversineKm(LATITUDE, LONGITUDE, lat, lon);
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+
+  if (best.isNull()) {
+    DBGLN("BR now: no usable station");
+    return false;
+  }
+
+  // Re-derive the icon code from the picked station.
+  char iconBuf[4];
+  extractBuienradarIconCode(best["iconurl"] | (const char*)nullptr,
+                            iconBuf, sizeof(iconBuf));
+
+  bool sunnyUnused;  // 128 px current-weather icon uses isNight, not this
+  WeatherCategory cat = categorizeBuienradarIcon(iconBuf, sunnyUnused);
+
+  // winddirectiondegrees is the canonical numeric bearing. Fall back to
+  // the Dutch cardinal string if it's missing (degrades to 8-point
+  // resolution but still correct).
+  int bearing = best["winddirectiondegrees"] | -1;
+  if (bearing < 0) {
+    bearing = bearingFromDutchCardinal(best["winddirection"] | "");
+    if (bearing < 0) bearing = 0;
+  }
+
+  float ms    = best["windspeed"]   | 0.0f;
+  temp        = best["temperature"] | 0.0f;
+  wind        = ms * 3.6f;          // m/s → km/h
+  weatherCode = categoryToSyntheticWmo(cat);
+  windBearing = bearing;
+
+  DBG("BR now station: "); DBG((const char*)(best["stationname"] | ""));
+  DBG(" ("); DBG(bestDist); DBG(" km) code="); DBG(iconBuf);
+  DBG(" temp="); DBG(temp); DBG(" wind="); DBG(wind);
+  DBG(" dir="); DBGLN(bearing);
   return true;
+}
+
+// Fetch the hyper-local 2h rain nowcast (24 lines of "VVV|HH:MM" at 5-min
+// spacing). Converts each line to mm/h via the published log formula.
+// On success, writes up to 24 entries into `rainData` and the matching
+// "HH:MM\0" strings into `timeLabels[i]` (caller allocates [][20]).
+bool fetchBuienradarRain(float rainData[], char timeLabels[][20], int &rainCount) {
+  rainCount = 0;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(8000);
+
+  char url[160];
+  snprintf(url, sizeof(url), BUIENRADAR_RAIN_URL,
+           (double)LATITUDE, (double)LONGITUDE);
+
+  if (!http.begin(client, url)) return false;
+
+  int code = httpGetWithRetry(http);
+  if (code != 200) {
+    DBG("BR rain HTTP fail: "); DBGLN(code);
+    http.end();
+    return false;
+  }
+
+  String body = http.getString();
+  http.end();
+
+  if (body.length() < 5) {
+    DBGLN("BR rain: empty body");
+    return false;
+  }
+
+  int idx = 0;
+  int from = 0;
+  while (idx < 24 && from < (int)body.length()) {
+    int nl = body.indexOf('\n', from);
+    int lineEnd = (nl < 0) ? body.length() : nl;
+    int pipe = body.indexOf('|', from);
+    if (pipe > from && pipe < lineEnd && (lineEnd - pipe) >= 6) {
+      int v = body.substring(from, pipe).toInt();
+      float mmh = (v <= 0) ? 0.0f : powf(10.0f, ((float)v - 109.0f) / 32.0f);
+      rainData[idx] = mmh;
+      // "HH:MM" lives immediately after the pipe.
+      strlcpy(timeLabels[idx], body.substring(pipe + 1, pipe + 6).c_str(), 20);
+      idx++;
+    }
+    if (nl < 0) break;
+    from = nl + 1;
+  }
+
+  rainCount = idx;
+  DBG("BR rain: parsed "); DBG(rainCount); DBGLN(" lines");
+  return (rainCount > 0);
 }
 
 // NS Trip Planner v3: fetch up to maxCount trips from fromStation to toStation.

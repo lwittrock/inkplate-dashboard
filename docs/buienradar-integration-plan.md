@@ -2,33 +2,69 @@
 
 ## Why this change
 
-Open-Meteo's `current` block is model-derived (interpolated from the latest run of a global numerical weather model). For the Netherlands this regularly produces "phantom clouds" — the dashboard reports `cloudy` while the sky is perfectly clear, because a coarse global model misjudged the timing of a front by an hour, or counted high-altitude cirrus as full cloud cover. Buienradar, by contrast, exposes live 10-minute KNMI ground-station telemetry plus a hyper-local 2-hour rain nowcast derived from KNMI's dual precipitation radars — what the physical sensors actually measure right now. For a dashboard that lives next to a window, observation-based data is the right primitive.
+Open-Meteo's `current` block is model-derived (interpolated from the latest run of a global numerical weather model). For the Netherlands this regularly produces "phantom clouds" — the dashboard reports `cloudy` while the sky is perfectly clear, because a coarse global model misjudged the timing of a front or counted high-altitude cirrus as full cloud cover. Buienradar exposes live 10-minute KNMI ground-station telemetry plus a hyper-local 2-hour rain nowcast derived from KNMI's dual precipitation radars. For a dashboard that lives next to a window, observation-based data is the right primitive.
 
-This plan replaces:
-- the Open-Meteo `current` block (temperature, wind speed, wind direction, weather code), and
-- the Open-Meteo `minutely_15` precipitation block
+This change replaces both Open-Meteo blocks in one branch (no staged rollout):
+- the `current` block (temperature, wind speed, wind direction, weather code) → Buienradar `data.buienradar.nl/2.0/feed/json`
+- the `minutely_15` precipitation block → Buienradar `gpsgadget.buienradar.nl/data/raintext`
 
-with Buienradar equivalents, while keeping the Open-Meteo `hourly` temperature curve and `daily` 7-day forecast untouched (those parts of Open-Meteo are fine and Buienradar's forecast surface is sparser).
-
-Open-Meteo remains the **fallback** source for the values Buienradar overwrites — if a Buienradar call fails for any reason, the Open-Meteo values stay in place and the dashboard still renders.
+Open-Meteo continues to provide `hourly` (24h temperature curve) and `daily` (7-day forecast). Its now-unused `current` and `minutely_15` URL parameters are stripped to shrink the response.
 
 ---
 
-## Why this is bigger than it looks
+## Locked-in decisions (from the questions you answered)
 
-Buienradar is not a drop-in replacement for two structural reasons:
+| Decision | Choice |
+|---|---|
+| Shipping cadence | Stage 1 + Stage 2 in one branch |
+| Attribution | None (personal project) |
+| Source-tag in footer | None (no `· BR` / `· OM`) |
+| Open-Meteo fallback on Buienradar failure | None — use RTC RAM cache of last known good |
+| Cache granularity | Current weather and rain cached separately |
+| Heap strategy | Slurp then parse (matches OM pattern) |
+| Rain chart density | 24 bars at 5-min spacing |
+| Open-Meteo URL | Strip `current=…` and `minutely_15=…` |
+| Cold boot + first fetch fail | Existing `"Weather data unavailable"` branch |
+| Dry-state outlook (no rain in 2h) | Keep — switch chart to 24h temp curve |
 
-1. **Different data model.** Open-Meteo returns WMO numeric codes (`0`, `2`, `61`, …) that go through `categorizeCurrentWeather(int)` in [A_Calculations.ino](../A_Calculations.ino). Buienradar returns single-letter strings (`a`, `b`, `cc`, …) mapped to Dutch condition phrases ("Zonnig", "Licht bewolkt"). Two different categorization paths must coexist.
-2. **Different rain units & cadence.** Open-Meteo `minutely_15` gives **mm-per-15-min** at 15-min spacing covering 3 hours (12 samples). Buienradar `raintext` gives an **encoded intensity integer** at 5-min spacing covering 2 hours (24 samples). Both unit conversion and rebinning are required.
+---
 
-Plus four operational concerns: station selection, fallback chain, attribution (legal), and heap pressure.
+## Architecture
 
-This is best implemented as **two sub-stages**, each independently verifiable:
+```
+                          ┌──────────────────────────────┐
+                          │  setup() per wake            │
+                          └──────────────────────────────┘
+                                       │
+              ┌────────────────────────┼────────────────────────┐
+              ▼                        ▼                        ▼
+   ┌────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
+   │ fetchOpenMeteo()   │  │ fetchBuienradarNow() │  │ fetchBuienradarRain()│
+   │ hourly + daily     │  │ JSON 40–60 KB        │  │ text ~250 B          │
+   │ (no current,       │  │ → nearest station    │  │ → 24 × mm/h, HH:MM   │
+   │  no minutely_15)   │  │ → temp, wind, code   │  │                      │
+   └────────────────────┘  └──────────────────────┘  └──────────────────────┘
+              │                        │                        │
+              │            success     │     success            │     success
+              │            ──────►     │     ──────►            │     ──────►
+              │                        │                        │
+              │            fail        │     fail               │     fail
+              │            keep        │     read from          │     read from
+              │            (forecast   │     RTC cache.now      │     RTC cache.rain
+              │             section)   │                        │
+              │                        ▼                        ▼
+              │              ┌────────────────────────────────────────┐
+              │              │ RTC_DATA_ATTR BuienradarCache cache    │
+              │              │   .nowValid, .now (5 fields)           │
+              │              │   .rainValid, .rain (24 mm/h + labels) │
+              │              │   survives deep sleep, ~700 B          │
+              │              └────────────────────────────────────────┘
+              │
+              ▼
+        updateDisplay(...)
+```
 
-- **Stage 1** — Buienradar replaces current weather only. Rain stays on Open-Meteo.
-- **Stage 2** — Buienradar `raintext` replaces the `minutely_15` rain block.
-
-Ship Stage 1 and let it run clean for ~a week before adding Stage 2. Don't merge them into one PR.
+Two independent Buienradar fetches, two cache regions. A 250-byte text fetch failing does not force the 5 current-weather fields to render from cache, and vice versa.
 
 ---
 
@@ -50,62 +86,66 @@ Add to [config.h.example](../config.h.example):
 
 ---
 
-## B2 — Buienradar iconcode → WeatherCategory mapping
+## Schema notes (verified against live `data.buienradar.nl/2.0/feed/json`)
 
-Existing enum: `CLEAR, PARTLY_CLOUDY, OVERCAST, FOG, DRIZZLE, RAIN, RAIN_HEAVY, SNOW, THUNDERSTORM` (see [Dashboard.ino:38-48](../Dashboard.ino)).
+Several fields the Gemini transcript described do not exist in the actual feed. Verified by curling the live endpoint:
 
-The Buienradar icon code letters are not formally published as a stable contract, but the mapping is empirically stable and used by Home Assistant (`mjj4791/python-buienradar`) and other long-running integrations. Cross-referenced against Buienradar's public legend page:
+- **No `iconcode` field.** The icon is exposed only as `iconurl` (e.g. `https://cdn.buienradar.nl/resources/images/icons/weather/30x30/aa.png`). The code is the filename stem.
+- **Icon codes are doubled letters for the day variant** (`aa`, `bb`, `cc`) and single for the night variant (`a`, `b`). Both forms map to the same `WeatherCategory`. `cc` is the only legitimate two-letter code that stays distinct in the mapping (heavy-overcast); all other doubled letters collapse to their single-letter equivalent before lookup.
+- **`winddirectiondegrees` is exposed directly as an integer** (0–360). The Dutch cardinal string (`winddirection`) is also present but only needed as a fallback.
+- **`feeltemperature` is lowercase** (not `feelTemperature` as Gemini claimed). The dashboard doesn't use it.
+- **Host is `cdn.buienradar.nl`** for icon URLs (not `www.buienradar.nl`).
 
-| iconcode | Dutch description | → WeatherCategory | useSunnyVariant |
-|---|---|---|---|
-| `a` | Vrijwel onbewolkt (zonnig/helder) | CLEAR | n/a |
-| `b` | Licht bewolkt | PARTLY_CLOUDY | n/a |
-| `c` | Zwaar bewolkt | OVERCAST | n/a |
-| `cc` | Zwaar bewolkt (dichter) | OVERCAST | n/a |
-| `d` | Afwisselend bewolkt met lokale mist | FOG | n/a |
-| `f` | Afwisselend bewolkt met lichte regen | DRIZZLE | **true** (sun + rain) |
-| `g` | Bewolkt met kans op onweer | THUNDERSTORM | n/a |
-| `h` | Wisselend bewolkt met regen | RAIN | **true** |
-| `i` | Zwaar bewolkt met lichte sneeuwval | SNOW | false |
-| `j` | Mix van opklaringen en hoge bewolking | CLEAR | n/a |
-| `k` | Zwaar bewolkt met wat lichte regen | DRIZZLE | false |
-| `l` | Opklaringen en kans op onweersbuien | THUNDERSTORM | n/a |
-| `m` | Zwaar bewolkt en regen | RAIN_HEAVY | false |
-| `n` | Opklaring en lokaal nevel of mist | FOG | n/a |
-| `o` | Mix van opklaringen en lage bewolking | PARTLY_CLOUDY | n/a |
-| `p` | Bewolkt | OVERCAST | n/a |
-| `q` | Zwaar bewolkt en regen | RAIN_HEAVY | n/a |
-| `r` | Mix van opklaringen en lage bewolking | PARTLY_CLOUDY | n/a |
-| `s` | Bewolkt met kans op onweer | THUNDERSTORM | n/a |
-| `u` | Afwisselend bewolkt met lichte sneeuwval | SNOW | **true** |
-| `v` | Zware sneeuwval | SNOW | false |
-| `w` | Zwaar bewolkt met winterse neerslag | SNOW | false |
-
-Notes:
-- `useSunnyVariant` is irrelevant for the 128-px current-weather icon (it uses isNight day/moon variants only), but is preserved so the same mapping can be reused for the week strip if needed.
-- Unknown / new codes → fall back to OVERCAST (safe grey default), log via `DBG`.
-- `j` (mostly clear with high cirrus) → CLEAR is the most direct fix for the "phantom cloud" complaint.
-
-Implementation: add to [A_Calculations.ino](../A_Calculations.ino):
-```cpp
-WeatherCategory categorizeBuienradarIcon(const char* code, bool& useSunnyVariant);
+Full first-station key list seen in the live feed:
+```
+$id, stationid, stationname, lat, lon, regio, timestamp,
+weatherdescription, iconurl, fullIconUrl, graphUrl,
+winddirection, airpressure, temperature, groundtemperature,
+feeltemperature, visibility, windgusts, windspeed, windspeedBft,
+humidity, precipitation, sunpower, rainFallLast24Hour,
+rainFallLastHour, winddirectiondegrees
 ```
 
 ---
 
-## B3 — Day/night handling for the icon
+## B2 — Buienradar icon code → WeatherCategory mapping
 
-Buienradar doesn't distinguish day/night in its iconcode. The existing `drawWeatherIcon128(x, y, weatherCode, isNight)` switches CLEAR→moon and PARTLY_CLOUDY→cloud+moon when `isNight=true`. `isNight` is computed at call site from local time — no change needed.
+| iconcode | Dutch | → WeatherCategory | useSunnyVariant |
+|---|---|---|---|
+| `a` | Vrijwel onbewolkt | CLEAR | n/a |
+| `b` | Licht bewolkt | PARTLY_CLOUDY | n/a |
+| `c` | Zwaar bewolkt | OVERCAST | n/a |
+| `cc` | Zwaar bewolkt (dichter) | OVERCAST | n/a |
+| `d` | Afwisselend bewolkt met lokale mist | FOG | n/a |
+| `f` | Afwisselend bewolkt met lichte regen | DRIZZLE | true |
+| `g` | Bewolkt met kans op onweer | THUNDERSTORM | n/a |
+| `h` | Wisselend bewolkt met regen | RAIN | true |
+| `i` | Zwaar bewolkt met lichte sneeuwval | SNOW | false |
+| `j` | Mix opklaringen en hoge bewolking | CLEAR | n/a |
+| `k` | Zwaar bewolkt met wat lichte regen | DRIZZLE | false |
+| `l` | Opklaringen en kans op onweersbuien | THUNDERSTORM | n/a |
+| `m` | Zwaar bewolkt en regen | RAIN_HEAVY | false |
+| `n` | Opklaring en lokaal nevel of mist | FOG | n/a |
+| `o` | Mix opklaringen en lage bewolking | PARTLY_CLOUDY | n/a |
+| `p` | Bewolkt | OVERCAST | n/a |
+| `q` | Zwaar bewolkt en regen | RAIN_HEAVY | n/a |
+| `r` | Mix opklaringen en lage bewolking | PARTLY_CLOUDY | n/a |
+| `s` | Bewolkt met kans op onweer | THUNDERSTORM | n/a |
+| `u` | Afwisselend bewolkt met lichte sneeuwval | SNOW | true |
+| `v` | Zware sneeuwval | SNOW | false |
+| `w` | Zwaar bewolkt met winterse neerslag | SNOW | false |
+
+Unknown codes → OVERCAST + DBG log. `j` → CLEAR is the most direct "phantom cloud" fix.
+
+Implementation: `categorizeBuienradarIcon(const char* code, bool& useSunnyVariant)` → `WeatherCategory`.
+
+Day/night: Buienradar doesn't distinguish. The existing `drawWeatherIcon128(..., isNight)` already picks moon vs sun. No new logic.
 
 ---
 
-## B4 — Wiring Buienradar's category into the existing render path
+## B3 — Wiring category into the existing render path
 
-Current data flow: `weatherCode` (int) is plumbed from `fetchOpenMeteo` → `updateDisplay` → `drawCurrentWeather` → `drawWeatherIcon128` → `categorizeCurrentWeather(int)`.
-
-Two integration options:
-
-**Option α (recommended for Stage 1, smallest diff):** map the resolved `WeatherCategory` back to an equivalent synthetic WMO code at fetch time. The existing `categorizeCurrentWeather()` round-trips it back to the right category.
+Use **Option α**: at fetch time, map resolved `WeatherCategory` back to an equivalent synthetic WMO code so `categorizeCurrentWeather(int)` round-trips it. Zero signature changes downstream.
 
 | WeatherCategory | Synthetic WMO code |
 |---|---|
@@ -119,191 +159,157 @@ Two integration options:
 | SNOW | 71 |
 | THUNDERSTORM | 95 |
 
-Pros: zero signature changes; fallback-compatible (Open-Meteo's real WMO code is already there as default).
-Cons: marginally indirect.
-
-**Option β:** refactor `drawCurrentWeather` and `drawWeatherIcon128` to accept `WeatherCategory` directly. Cleaner but touches more code.
-
-→ Use **α** for Stage 1. Refactor to β later if iconcode logic grows.
-
 ---
 
-## B5 — Station selection
-
-The JSON feed contains ~50 station blocks. Do **not** hardcode `stationid 6215`. Algorithm:
+## B4 — Station selection
 
 ```
 best = null
 for s in actual.stationmeasurements:
-    if s.iconcode is null/empty → skip          // some stations are precip-only
+    code = extractBuienradarIconCode(s.iconurl)
+    if code is "" → skip                                  // precip-only stations
+    if s.temperature missing → skip
     if s.timestamp older than BUIENRADAR_STALE_MIN → skip
     d = haversine(LATITUDE, LONGITUDE, s.lat, s.lon)
     if best is null or d < best.distance: best = (s, d)
 return best
 ```
 
-For Delft (52.01, 4.36) the nearest stations with full data are typically Voorschoten (52.13, 4.43), Rotterdam-Geulhaven (51.89, 4.31), and Hoek van Holland (51.99, 4.10) — all within ~15 km.
+For Delft (52.01, 4.36) the typical winners are Voorschoten (~13 km), Rotterdam-Geulhaven (~16 km), Hoek van Holland (~25 km).
 
-If all stations fail the stale/iconcode filter (rare), fall back to Open-Meteo current values already in memory.
-
-Implementation: add `haversineKm(lat1, lon1, lat2, lon2)` to [A_Calculations.ino](../A_Calculations.ino). Use `float` math — accuracy is irrelevant for ranking stations.
+Add `haversineKm(lat1, lon1, lat2, lon2)` to [A_Calculations.ino](../A_Calculations.ino). `float` math.
 
 ---
 
-## B6 — Wind direction & speed conversions
+## B5 — Wind direction & speed
 
-Buienradar returns:
-- `windspeed` — number, **m/s**
-- `winddirection` — string, Dutch 16-point compass (e.g. `"NNO"`, `"ZZW"`)
+Buienradar exposes both:
+- `windspeed` — m/s (multiply by 3.6 for km/h)
+- `winddirectiondegrees` — integer 0–360 (preferred — used directly)
+- `winddirection` — Dutch 16-point cardinal (`"NNO"`, `"ZZW"`, …) — kept only as fallback
 
-Existing display expects: `wind` in km/h, `windBearing` in degrees-from-north.
+`bearingFromDutchCardinal` lives in [A_Calculations.ino](../A_Calculations.ino) for the rare case where `winddirectiondegrees` is absent (8-point resolution but correct):
 
-Add to [A_Calculations.ino](../A_Calculations.ino):
-
-```cpp
-// Returns -1 if the string is unrecognized.
-int bearingFromDutchCardinal(const char* s);
-```
-
-Mapping (Dutch → bearing degrees, rounded to int):
-
-| String | Bearing | String | Bearing |
+| | | | |
 |---|---|---|---|
-| N | 0 | Z | 180 |
-| NNO | 23 | ZZW | 203 |
-| NO | 45 | ZW | 225 |
-| ONO | 68 | WZW | 248 |
-| O | 90 | W | 270 |
-| OZO | 113 | WNW | 293 |
-| ZO | 135 | NW | 315 |
-| ZZO | 158 | NNW | 338 |
-
-Speed conversion: `wind_kmh = windspeed_ms * 3.6f`.
-
-Downstream code (`cardinalCompass()` returning English `"NNW"`) is unchanged: 8-bucket resolution is intentional and matches the existing display style.
+| N=0 | NNO=23 | NO=45 | ONO=68 |
+| O=90 | OZO=113 | ZO=135 | ZZO=158 |
+| Z=180 | ZZW=203 | ZW=225 | WZW=248 |
+| W=270 | WNW=293 | NW=315 | NNW=338 |
 
 ---
 
-## B7 — Heap budget & parse strategy
+## B6 — Heap & parse strategy
 
-The JSON feed is ~40–60 KB.
-
-| Approach | Heap peak | Reliability on WiFiClientSecure | Verdict |
-|---|---|---|---|
-| Slurp into `String`, then parse (Open-Meteo pattern) | ~60 KB transient + JsonDoc | Known good — Open-Meteo at [B_Network.ino:137-140](../B_Network.ino) explicitly warns against streaming | **Recommended for Stage 1** |
-| Stream + Filter (Trip Planner pattern) | ~5 KB filtered JsonDoc | Trip Planner verified on 90 KB; might still IncompleteInput intermittently | Use only if slurp pressures heap |
-
-Free heap after WiFi connect is typically 180–220 KB, so 60 KB slurp is comfortable. Start with slurp; if `DBG("Buienradar heap:")` shows < 30 KB free post-parse, switch to Filter targeting `actual.stationmeasurements[].{stationid, stationname, lat, lon, iconcode, weatherdescription, timestamp, temperature, feelTemperature, humidity, windspeed, winddirection}`.
+Slurp the JSON body into a `String`, then parse — same pattern as `fetchOpenMeteo` and the just-fixed `fetchTrips`. ~50 KB transient + JsonDoc; free heap at fetch time is ~150 KB. Comfortable.
 
 The `raintext` body is ~250 bytes — slurp unconditionally.
 
 ---
 
-## B8 — Fallback chain
-
-Fetch order in `setup()` (in [Dashboard.ino](../Dashboard.ino)):
-
-```
-1. fetchOpenMeteo(...)             → populates temp, weatherCode, wind, windDirection, rainData[12]
-2. fetchBuienradarCurrent(...)     → overwrites temp, weatherCode, wind, windDirection on success
-3. fetchBuienradarRain(...)        → (Stage 2) overwrites rainData + rainCount + timeLabels on success
-```
-
-If step 2 or 3 fails, the Open-Meteo values from step 1 stay in place. Failures must be silent (DBG log only) — never `showError()`; the dashboard must always render.
-
-**Visual indicator:** append `" · BR"` or `" · OM"` to the footer "updated HH:MM" line to make silent fallbacks visible at a glance.
-
----
-
-## B9 — Rain chart adaptation (Stage 2 only)
-
-Current rain chart ([C_Display.ino:635-…](../C_Display.ino)) consumes:
-- `rainData[12]` — mm in each 15-min slot
-- `timeLabels[12][20]` — ISO timestamps like `"2026-05-24T19:15"`
-- `rainCount` — usually 12, covers 3 h forward
-
-Buienradar `raintext` gives:
-- 24 lines, format `VVV|HH:MM` (e.g. `035|19:25`)
-- Intensity: `mm/h = pow(10, (V - 109) / 32.0)`, clamped to 0 if V==0
-- 5-min spacing, covers 2 h forward
-
-**Cadence mismatch.** 24 × 5 min vs 12 × 15 min. Recommended fix:
-- (a) Bump array sizes to 24 and rescale the chart's x-axis spacing (24 bars instead of 12, half as wide each). More information density; a 5-min nowcast is exactly what Buienradar is famous for.
-- (b) Aggregate 24 samples into 8 × 15-min bins by averaging — chart stays 12 wide.
-
-→ Recommend **(a)**. Bump `rainData[12]` → `rainData[24]` and `timeLabels[12][20]` → `timeLabels[24][20]` in [Dashboard.ino:142-143](../Dashboard.ino). Update chart x-axis labels in [C_Display.ino](../C_Display.ino) accordingly.
-
-**Unit mismatch.** Open-Meteo gives mm-per-15-min (typically 0.0–2.5). Buienradar gives mm/h (typically 0.0–10.0 for moderate rain). Chart thresholds at [C_Display.ino:641-643](../C_Display.ino) are 0.1 / 1.0 / 2.5 mm:
+## B7 — RTC cache
 
 ```cpp
-const float heavyThreshold  = 2.5f;  // currently mm-per-15min
-const float mediumThreshold = 1.0f;
-const float lightThreshold  = 0.1f;
+struct BuienradarCache {
+  // Current weather
+  bool  nowValid;
+  float temp;
+  int   weatherCode;     // synthetic WMO from BR mapping
+  float wind;            // km/h
+  int   windBearing;     // degrees from N
+
+  // Rain nowcast
+  bool  rainValid;
+  int   rainCount;
+  float rainMmh[24];     // intensity in mm/h
+  char  rainLabels[24][6];  // "HH:MM\0"
+};
+RTC_DATA_ATTR BuienradarCache brCache = {};
 ```
 
-Translation: `mm-per-15min × 4 ≈ mm/h`. Semantic bands in mm/h: 0.4 / 4.0 / 10.0.
+Size: ~700 bytes. Easily fits in RTC slow RAM (8 KB available).
 
-**Make the unit explicit**: rename thresholds to `lightMmh`, `mediumMmh`, `heavyMmh`. When Open-Meteo is the source (fallback), multiply by 4 at fetch time so the chart only ever sees mm/h. (Simpler than carrying a unit flag.)
+On every successful fetch, copy fresh values into the cache. On failure, copy cache values back into the working variables (if `*Valid`). If neither fresh nor cached, render the existing `weatherOk=false` / `rainOk=false` branches.
+
+The cache lives across deep sleep (`RTC_DATA_ATTR`), but is zero-initialized on cold boot (battery removal / first flash). The very first wake after a cold boot relies on a successful fetch; if that fails, the dashboard renders the existing "Weather data unavailable" message and self-heals on the next wake.
 
 ---
 
-## B10 — Attribution requirement (legal)
+## B8 — Rain chart adaptation
 
-Buienradar TOS requires visible attribution on any UI using the free feed. Add to the footer line in [C_Display.ino](../C_Display.ino) (the section that draws "updated HH:MM" at y=590):
+Current: `rainData[12]` mm-per-15-min, `timeLabels[12][20]` ISO strings, 30-px bar spacing.
 
-```
-updated 19:15 · BR · data: Buienradar.nl
-```
+New: `rainData[24]` mm/h, `timeLabels[24][6]` `"HH:MM"`, ~14-px bar spacing.
 
-Attribution is required whenever any Buienradar value is on screen — Stage 1 already triggers the requirement. Footer character budget should be OK; current footer is short.
+Threshold rebase (`mm/h ≈ mm-per-15min × 4`):
+
+| | Old (mm-per-15min) | New (mm/h) |
+|---|---|---|
+| Light | 0.1 | **0.4** |
+| Medium | 1.0 | **4.0** |
+| Heavy | 2.5 | **10.0** |
+| `maxScale` default | 3.0 | **12.0** |
+
+Dry-state trigger: change `rainData[i] >= 0.1f` (in mm-per-15-min) → `rainData[i] >= 0.4f` (in mm/h). Same semantic threshold.
+
+Hour-tick logic: currently parses minute from ISO offset 14. New format is `"HH:MM"`, minute at offset 3. Bar `i` is at minute `5*i` past the first label's time, so detect minute==0 from the label string directly.
 
 ---
 
-## B11 — Failure modes & edge cases
+## B9 — Open-Meteo URL trimming
+
+Remove from URL in [B_Network.ino:118-127](../B_Network.ino):
+- `&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m`
+- `&minutely_15=precipitation&forecast_minutely_15=12`
+
+Also remove from `fetchOpenMeteo` body:
+- The current-weather parse (lines ~152-156)
+- The 15-min rain parse (lines ~228-240)
+- The `temp`, `wind`, `currentWeatherCode`, `rainData`, `timeLabels`, `rainCount`, `rainOk` output params
+
+New signature:
+```cpp
+bool fetchOpenMeteo(WeatherExtras &extras, DayForecast forecast[], int &forecastCount);
+```
+
+Saves ~5–8 KB on the OM response.
+
+---
+
+## B10 — Failure modes
 
 | Failure | Behavior |
 |---|---|
-| `data.buienradar.nl` returns 200 but malformed JSON | Log error, keep OM values |
-| All stations stale (>60 min) | Log warning, keep OM values, mark footer `· OM` |
-| Nearest station has iconcode but `temperature` missing | Skip station, try next |
-| Buienradar HTTP timeout (8 s) | `httpGetWithRetry` handles 3 attempts; final failure → keep OM |
-| Wind direction string is unrecognized | `bearingFromDutchCardinal` returns -1 → fall back to OM's windDirection |
-| `iconcode` is a new letter we haven't mapped | Falls through to OVERCAST + DBG log |
-| `raintext` returns 200 but body is 0 bytes | Keep OM rain |
-| `raintext` lines malformed (e.g. only one line) | Use what parsed; if 0 valid lines, keep OM |
-| Buienradar serves redirect to consumer page (rare past incident) | `http.GET()` won't follow; treat non-200 as failure → keep OM |
+| `data.buienradar.nl` non-200 or malformed JSON | DBG log, restore `now` from cache (if valid) |
+| All stations stale (>60 min) | DBG warning, restore `now` from cache (if valid) |
+| Nearest station missing `temperature` | Skip station, try next |
+| Unknown `iconcode` | Falls to OVERCAST + DBG log of the letter |
+| Wind direction string unrecognized | bearing = -1 → skip station |
+| `raintext` non-200 or 0 bytes | DBG log, restore `rain` from cache (if valid) |
+| `raintext` malformed lines | Use valid lines only; if 0 valid → cache fallback |
+| Cold boot + BR fail + no cache | Existing `"Weather data unavailable"` / dry-outlook branch renders |
 
 ---
 
-## B12 — Files modified
+## Files modified
 
-- **[B_Network.ino](../B_Network.ino)** — add `fetchBuienradarCurrent()` and (Stage 2) `fetchBuienradarRain()`. ~80 + ~30 lines.
-- **[A_Calculations.ino](../A_Calculations.ino)** — add `categorizeBuienradarIcon()`, `bearingFromDutchCardinal()`, `haversineKm()`. ~50 lines.
-- **[Dashboard.ino](../Dashboard.ino)** — wire Buienradar calls into `setup()` after Open-Meteo; (Stage 2) bump `rainData[12]→[24]`, `timeLabels[12]→[24]`.
-- **[C_Display.ino](../C_Display.ino)** — footer: add source-tag (`· BR`/`· OM`) and Buienradar attribution; (Stage 2) widen rain chart to 24 bars, rebase thresholds to mm/h.
-- **[config.h.example](../config.h.example)** — `BUIENRADAR_FEED_URL`, `BUIENRADAR_RAIN_URL`, `BUIENRADAR_STALE_MIN`.
+| File | Change |
+|---|---|
+| [config.h.example](../config.h.example) | + 3 Buienradar constants |
+| [A_Calculations.ino](../A_Calculations.ino) | + `categorizeBuienradarIcon`, `bearingFromDutchCardinal`, `haversineKm`, `categoryToSyntheticWmo` |
+| [B_Network.ino](../B_Network.ino) | + `fetchBuienradarNow`, `fetchBuienradarRain`; trim OM URL + parse + signature |
+| [Dashboard.ino](../Dashboard.ino) | + `BuienradarCache` RTC struct + RTC instance; rewire `setup()`; bump `rainData[12]→[24]`, `timeLabels[12][20]→[24][6]`; update `fetchOpenMeteo` call site |
+| [C_Display.ino](../C_Display.ino) | `timeLabels[][20]→[][6]` in `drawRainChart`, `updateDisplay`; bar spacing 30→14 px; mm/h thresholds; new hour-tick parser; dry-state threshold 0.1→0.4 |
 
-No `icons.h` changes. No new fonts. No struct changes for Stage 1 (Option α). Stage 2 changes only the array sizes.
+No icons.h changes. No new fonts. No struct refactors of WeatherExtras / DayForecast.
 
 ---
 
 ## Verification
 
-**Stage 1 (current weather):**
-- Watch serial log over 4–8 wakes (1–2 h): confirm nearest station picked, freshness OK, no fallbacks.
-- Compare on-screen current condition vs Buienradar.nl in browser at same moment. Should agree.
-- Force fallback by temporarily setting `BUIENRADAR_FEED_URL` to a bad URL; confirm OM values render and footer shows `· OM`.
-- Trigger an unmapped iconcode by injecting a test value in `categorizeBuienradarIcon`; confirm OVERCAST renders and DBG logs the code.
-
-**Stage 2 (rain):**
-- During rain, compare 5-min nowcast bars to Buienradar.nl's app graph.
-- During dry weather, confirm all bars are zero and the dry-state temp curve fallback path renders unchanged.
-- Heap check: `DBG("Buienradar rain heap:")` should show >50 KB free after parse.
-
----
-
-## Open questions worth raising before implementation
-
-1. **Where to put the attribution?** Footer is least intrusive; alternative is small text under the current-weather icon (eats display real estate). Recommend footer.
-2. **Should the footer source-tag (`· BR`/`· OM`) be permanent or removable after stability is proven?** Recommend keep — costs ~6 chars, makes silent fallbacks visible.
-3. **Stage 1 → Stage 2 cadence: ship together or separately?** Recommend separate; user can override.
+- Watch serial log over 4–8 wakes: confirm nearest station is sane (~Voorschoten / Rotterdam), no fallbacks.
+- Visually compare on-screen condition to Buienradar.nl in the browser at the same moment.
+- Force failure by editing `BUIENRADAR_FEED_URL` to a bad host; confirm cache values render after the first successful warm-up wake. Restore URL.
+- Cold-boot test: flash, watch first wake. If BR succeeds, weather panel renders normally. If BR fails first try, expect "Weather data unavailable", then second wake recovers.
+- During rain: compare 5-min nowcast bars to Buienradar.nl's app graph.
+- Heap: confirm `DBG("BR now heap:")` post-parse shows >50 KB free.

@@ -207,6 +207,95 @@ int pickDepartures(const Departure ctr[], int nCtr,
   return picked;
 }
 
+// ============================================================================
+// BUIENRADAR HELPERS
+// ============================================================================
+
+// Haversine great-circle distance in km. Float math is plenty accurate for
+// ranking the ~50 weather stations the BR feed exposes.
+float haversineKm(float lat1, float lon1, float lat2, float lon2) {
+  const float R = 6371.0f;
+  float dLat = (lat2 - lat1) * (float)PI / 180.0f;
+  float dLon = (lon2 - lon1) * (float)PI / 180.0f;
+  float a = sinf(dLat / 2.0f) * sinf(dLat / 2.0f) +
+            cosf(lat1 * (float)PI / 180.0f) * cosf(lat2 * (float)PI / 180.0f) *
+            sinf(dLon / 2.0f) * sinf(dLon / 2.0f);
+  float c = 2.0f * atan2f(sqrtf(a), sqrtf(1.0f - a));
+  return R * c;
+}
+
+// Buienradar uses Dutch 16-point compass strings ("N", "NNO", "ZZW", …).
+// Returns degrees from north (0–337) or -1 if unrecognised.
+// Dutch convention: O=Ost(east), Z=Zuid(south), W=West, N=Noord.
+int bearingFromDutchCardinal(const char* s) {
+  if (!s || !s[0]) return -1;
+  struct { const char* code; int deg; } table[] = {
+    {"N",0},{"NNO",23},{"NO",45},{"ONO",68},
+    {"O",90},{"OZO",113},{"ZO",135},{"ZZO",158},
+    {"Z",180},{"ZZW",203},{"ZW",225},{"WZW",248},
+    {"W",270},{"WNW",293},{"NW",315},{"NNW",338}
+  };
+  for (auto& e : table) if (strcmp(s, e.code) == 0) return e.deg;
+  return -1;
+}
+
+// Map a Buienradar single/double-letter iconcode to the existing
+// WeatherCategory enum. See docs/buienradar-integration-plan.md §B2 for the
+// derivation. Unknown codes fall through to OVERCAST.
+WeatherCategory categorizeBuienradarIcon(const char* code, bool& useSunnyVariant) {
+  useSunnyVariant = false;
+  if (!code || !code[0]) return OVERCAST;
+
+  // "cc" is the only multi-char code; handle it explicitly.
+  if (strcmp(code, "cc") == 0) return OVERCAST;
+
+  switch (code[0]) {
+    case 'a': return CLEAR;
+    case 'j': return CLEAR;
+    case 'b': return PARTLY_CLOUDY;
+    case 'o': return PARTLY_CLOUDY;
+    case 'r': return PARTLY_CLOUDY;
+    case 'p': return OVERCAST;
+    case 'c': return OVERCAST;
+    case 'd': return FOG;
+    case 'n': return FOG;
+    case 'f': useSunnyVariant = true;  return DRIZZLE;
+    case 'k': return DRIZZLE;
+    case 'h': useSunnyVariant = true;  return RAIN;
+    case 'm': return RAIN_HEAVY;
+    case 'q': return RAIN_HEAVY;
+    case 'g': return THUNDERSTORM;
+    case 's': return THUNDERSTORM;
+    case 'l': return THUNDERSTORM;
+    case 'i': return SNOW;
+    case 'u': useSunnyVariant = true;  return SNOW;
+    case 'v': return SNOW;
+    case 'w': return SNOW;
+    default:
+      DBG("BR unknown iconcode: "); DBGLN(code);
+      return OVERCAST;
+  }
+}
+
+// Synthetic WMO code so the existing categorizeCurrentWeather(int) round-trips
+// a Buienradar-derived category back to the same enum value (option α in the
+// integration plan). Lets us inject BR data without changing every signature
+// from fetch to drawWeatherIcon128.
+int categoryToSyntheticWmo(WeatherCategory c) {
+  switch (c) {
+    case CLEAR:         return 0;
+    case PARTLY_CLOUDY: return 2;
+    case OVERCAST:      return 3;
+    case FOG:           return 45;
+    case DRIZZLE:       return 51;
+    case RAIN:          return 61;
+    case RAIN_HEAVY:    return 81;
+    case SNOW:          return 71;
+    case THUNDERSTORM:  return 95;
+  }
+  return 3;
+}
+
 // 8-bucket cardinal compass from a meteorological wind bearing (degrees from N,
 // clockwise). 0° → "N", 45° → "NE", etc. Buckets are 45° wide and centered on
 // the cardinal/inter-cardinal points (so 23–67° is "NE").

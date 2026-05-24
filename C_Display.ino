@@ -659,24 +659,29 @@ void drawTempCurve(const float hourly[], int n,
   display.setFont();
 }
 
+// Renders the Buienradar 2-hour rain nowcast: up to 24 intensity samples
+// at 5-min spacing (mm/h) with their "HH:MM" labels. Bar spacing is
+// derived from the actual sample count so the chart fills the panel
+// regardless of how many lines parsed.
 void drawRainChart(float rainData[], char timeLabels[][20], int rainCount) {
   const int x0 = 420, x1 = 750;
   const int yTop = 140, yBot = 260;
   const int chartH = yBot - yTop;
 
-  // Precipitation thresholds (mm) — fixed semantic values.
-  const float heavyThreshold  = 2.5f;
-  const float mediumThreshold = 1.0f;
-  const float lightThreshold  = 0.1f;
-  float maxScale = 3.0f;
+  // Precipitation thresholds (mm/h) — values map to Buienradar's text-feed
+  // semantic bands once the (mm-per-15min × 4) conversion is applied.
+  const float heavyThreshold  = 10.0f;
+  const float mediumThreshold = 4.0f;
+  const float lightThreshold  = 0.4f;
+  float maxScale = 12.0f;
 
   bool hasRain = false;
   float maxRain = 0;
   for (int i = 0; i < rainCount; i++) {
-    if (rainData[i] > 0.05f) hasRain = true;
+    if (rainData[i] > 0.2f) hasRain = true;
     if (rainData[i] > maxRain) maxRain = rainData[i];
   }
-  if (maxRain > maxScale) maxScale = maxRain + 0.5f;
+  if (maxRain > maxScale) maxScale = maxRain + 1.0f;
 
   // Axes
   display.drawLine(x0, yTop, x0, yBot, BLACK);
@@ -693,9 +698,11 @@ void drawRainChart(float rainData[], char timeLabels[][20], int rainCount) {
     return;
   }
 
-  // 12 points spaced 30 px across the 330 px wide chart.
-  const int n = min(12, rainCount);
-  auto xForI    = [&](int i)     { return x0 + i * 30; };
+  // Bar spacing derived from sample count so the chart always fills the
+  // panel. 24 samples (Buienradar default) → ~14 px per bar.
+  const int n = min(24, rainCount);
+  const int spacing = (n > 1) ? (x1 - x0) / (n - 1) : 30;
+  auto xForI    = [&](int i)     { return x0 + i * spacing; };
   auto yForRain = [&](float mm)  {
     int h = (int)((mm / maxScale) * chartH + 0.5f);
     if (h > chartH) h = chartH;
@@ -750,13 +757,14 @@ void drawRainChart(float rainData[], char timeLabels[][20], int rainCount) {
   drawThreshold(lightThreshold,  "Light");
 
   // --- Hour ticks on the x-axis (only at minute == 0) ---
+  // Labels are Buienradar's native "HH:MM" — hour at offset 0, minute at 3.
   display.setFont(&Inter_Regular9pt7b);
   for (int i = 0; i < n; i++) {
-    if (strlen(timeLabels[i]) < 16) continue;
+    if (strlen(timeLabels[i]) < 5) continue;
     char buf[3] = {};
-    strncpy(buf, timeLabels[i] + 14, 2); int minute = atoi(buf);
+    strncpy(buf, timeLabels[i] + 3, 2); int minute = atoi(buf);
     if (minute != 0) continue;
-    strncpy(buf, timeLabels[i] + 11, 2); int hour = atoi(buf);
+    strncpy(buf, timeLabels[i] + 0, 2); int hour = atoi(buf);
 
     int x = xForI(i);
     display.drawLine(x, yBot, x, yBot + 4, BLACK);
@@ -1049,11 +1057,13 @@ void updateDisplay(
     display.setFont();
   }
 
-  // Right panel: rain chart when rain ≥0.1 mm in the next 3 h, else temp curve.
+  // Right panel: rain chart when rain ≥0.4 mm/h in the next 2 h, else
+  // 24-h temp curve. (0.4 mm/h is Buienradar's "light rain" floor, the
+  // mm/h equivalent of the old 0.1 mm-per-15-min OM threshold.)
   bool rainComing = false;
   if (rainOk) {
     for (int i = 0; i < rainCount; i++) {
-      if (rainData[i] >= 0.1f) { rainComing = true; break; }
+      if (rainData[i] >= 0.4f) { rainComing = true; break; }
     }
   }
   if (rainComing) {

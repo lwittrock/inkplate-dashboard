@@ -27,14 +27,17 @@ C_Display.ino        — All rendering: fonts, icons, drawing helpers, sections
 **Data flow:**
 ```
 setup()
-  ├─ initHardware()         WiFi connect + NTP sync (POSIX TZ)
-  ├─ handleNightMode()      deep sleep if 23:00–07:00
-  ├─ fetchOpenMeteo()       current + 24h hourly + 7-day daily + 15-min rain
-  ├─ fetchTrips(GVC → TBU)  NS Trip Planner v3 (streaming + Filter)
-  ├─ fetchTrips(GV  → TBU)  NS Trip Planner v3
-  ├─ pickDepartures(ctr,hs) per-slot picker → 3 Departure[]
-  ├─ updateDisplay()        render all sections → display.display()
-  └─ goToSleep(900)         deep sleep 15 min; wakeup restarts setup()
+  ├─ initHardware()           WiFi connect + NTP sync (POSIX TZ)
+  ├─ handleNightMode()        deep sleep if 23:00–07:00
+  ├─ fetchOpenMeteo()         24h hourly temps + 7-day daily forecast
+  ├─ fetchBuienradarNow()     live KNMI station: temp, weather code, wind
+  ├─ fetchBuienradarRain()    2h rain nowcast (24 × 5-min mm/h samples)
+  │     ↑ on failure: restore from RTC_DATA_ATTR brCache (nowValid/rainValid)
+  ├─ fetchTrips(GVC → TBU)    NS Trip Planner v3 (slurp + Filter)
+  ├─ fetchTrips(GV  → TBU)    NS Trip Planner v3
+  ├─ pickDepartures(ctr,hs)   per-slot picker → 3 Departure[]
+  ├─ updateDisplay()          render all sections → display.display()
+  └─ goToSleep(900)           deep sleep 15 min; wakeup restarts setup()
 ```
 
 `loop()` is intentionally empty — deep sleep re-enters `setup()` on each cycle.
@@ -65,14 +68,16 @@ Key settings:
 
 | API | Auth | URL |
 |---|---|---|
-| Open-Meteo (current + hourly 24h + daily 7d + 15-min rain) | None (free) | `api.open-meteo.com/v1/forecast` |
+| Open-Meteo (hourly 24h + daily 7d forecast) | None (free) | `api.open-meteo.com/v1/forecast` |
+| Buienradar feed (live KNMI station observations) | None (free, attribution required for commercial use) | `data.buienradar.nl/2.0/feed/json` |
+| Buienradar raintext (2h precipitation nowcast) | None (free) | `gpsgadget.buienradar.nl/data/raintext?lat=…&lon=…` |
 | NS Trip Planner v3 (GVC→TBU and GV→TBU) | `Ocp-Apim-Subscription-Key` header | `gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips` |
 
 All HTTP calls use `WiFiClientSecure` with `client.setInsecure()` (no certificate validation — known limitation), an 8 s timeout, and up to 3 retries via `httpGetWithRetry()`.
 
-**Two parse patterns coexist** — see "Working with Claude Code" below for when to use which:
-- Open-Meteo (~10–20 KB payload): slurp into `String`, then parse.
-- Trip Planner (~90 KB payload): stream directly with `DeserializationOption::Filter` to keep heap under control.
+**Parse pattern: slurp before parse.** Every HTTPS JSON call (Open-Meteo, Buienradar, Trip Planner) reads the full body into a `String` first and then `deserializeJson(...)`. Streaming straight from `getStream()` over `WiFiClientSecure` intermittently returns `IncompleteInput` when the TLS buffer drains mid-parse — proven on every endpoint that's been tried. The Trip Planner call keeps memory bounded by pairing slurp with `DeserializationOption::Filter` so only the fields the picker actually reads land in the JsonDoc.
+
+**Buienradar mapping & fallback:** the alphabetic iconcode (e.g. `a` = sunny, `j` = clear with high cirrus, `p` = overcast) is translated to the dashboard's `WeatherCategory` enum in `categorizeBuienradarIcon()` and then round-tripped through a synthetic WMO integer so downstream code is unchanged. On any Buienradar fetch failure, the dashboard restores the last successful values from `RTC_DATA_ATTR brCache` (separate `nowValid` / `rainValid` flags) rather than falling back to Open-Meteo. Cold boot with a failed first fetch shows the existing "Weather data unavailable" branch and self-heals next wake.
 
 ---
 

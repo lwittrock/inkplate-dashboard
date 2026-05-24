@@ -42,6 +42,19 @@ const char* STATION_CODE_DESTINATION = "TBU";  // Tilburg Universiteit
 const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ string
 
 // ============================================================================
+// BUIENRADAR (live KNMI observations — for current weather + 2h rain)
+// ============================================================================
+// No key required. Open-Meteo is kept for the 24h hourly + 7-day daily
+// forecast; Buienradar replaces Open-Meteo's current-conditions and
+// 15-min precipitation blocks because its data comes from physical KNMI
+// ground stations (10-min cadence) and radar nowcast (5-min cadence),
+// avoiding the "phantom cloud" model artefacts.
+#define BUIENRADAR_FEED_URL "https://data.buienradar.nl/2.0/feed/json"
+#define BUIENRADAR_RAIN_URL "https://gpsgadget.buienradar.nl/data/raintext?lat=%.2f&lon=%.2f"
+// Skip stations whose latest reading is older than this many minutes.
+#define BUIENRADAR_STALE_MIN 60
+
+// ============================================================================
 // OPTIONAL: DEBUG LOGGING
 // ============================================================================
 // Set to 1 to enable Serial output at 115200 baud. Default 0 saves ~200 ms

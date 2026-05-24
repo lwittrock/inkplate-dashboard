@@ -96,6 +96,7 @@ bool fetchOpenMeteo(
     float &temp,
     float &wind,
     int &currentWeatherCode,
+    WeatherExtras &extras,
     DayForecast forecast[],
     int &forecastCount,
     float rainData[],
@@ -105,16 +106,19 @@ bool fetchOpenMeteo(
   ) {
   rainOk = false;
   rainCount = 0;
+  extras.windDirection = 0;
+  extras.hourlyCount = 0;
 
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
   http.setTimeout(8000);
 
-  char url[512];
+  char url[640];
   snprintf(url, sizeof(url),
     "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-    "&current=temperature_2m,weather_code,wind_speed_10m"
+    "&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m"
+    "&hourly=temperature_2m&forecast_hours=24"
     "&minutely_15=precipitation&forecast_minutely_15=12"
     "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,"
     "sunshine_duration,daylight_duration,precipitation_sum,precipitation_hours,snowfall_sum,"
@@ -148,6 +152,18 @@ bool fetchOpenMeteo(
   temp = doc["current"]["temperature_2m"] | 0.0f;
   wind = doc["current"]["wind_speed_10m"] | 0.0f;
   currentWeatherCode = doc["current"]["weather_code"] | 0;
+
+  extras.windDirection = doc["current"]["wind_direction_10m"] | 0;
+
+  // 24-hour temperature curve for the dry-state right panel.
+  JsonArray hourly = doc["hourly"]["temperature_2m"];
+  if (!hourly.isNull()) {
+    int n = min(24, (int)hourly.size());
+    for (int i = 0; i < n; i++) {
+      extras.hourlyTemp[i] = hourly[i] | 0.0f;
+    }
+    extras.hourlyCount = n;
+  }
 
   // Daily forecast
   JsonArray tmax = doc["daily"]["temperature_2m_max"];
@@ -226,92 +242,146 @@ bool fetchOpenMeteo(
   return true;
 }
 
-int getTrains(Train trains[], int max, const char* stationCode) {
+// NS Trip Planner v3: fetch up to maxCount trips from fromStation to toStation.
+// Streams the response through ArduinoJson with a Filter so the parsed tree
+// stays small (~5 KB) instead of holding the full ~90 KB payload in heap.
+// Per CLAUDE.md, streaming over WiFiClientSecure was flaky for the merged
+// Open-Meteo call — being re-validated here on a similarly large payload.
+int fetchTrips(const char* fromStation, const char* toStation,
+               TrainOrigin origin, Departure out[], int maxCount) {
+  DBG("fetchTrips heap before: "); DBGLN(ESP.getFreeHeap());
+
   WiFiClientSecure client;
   client.setInsecure();
 
   HTTPClient http;
   http.setTimeout(8000);
-  String url = "https://gateway.apiportal.ns.nl/reisinformatie-api/api/v2/departures?station=" + String(stationCode);
+
+  char url[256];
+  snprintf(url, sizeof(url),
+    "https://gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips"
+    "?fromStation=%s&toStation=%s&maxJourneys=%d",
+    fromStation, toStation, maxCount);
 
   if (!http.begin(client, url)) {
-    DBGLN("ERROR: http.begin() failed");
+    DBGLN("ERROR: http.begin() failed (Trip Planner)");
     return 0;
   }
-  
   http.addHeader("Ocp-Apim-Subscription-Key", NS_API_KEY);
 
-  int httpCode = httpGetWithRetry(http);
-  if (httpCode != 200) {
-    DBG("Train API failed with code: "); DBGLN(httpCode);
+  int code = httpGetWithRetry(http);
+  if (code != 200) {
+    DBG("Trip Planner HTTP fail: "); DBGLN(code);
     http.end();
     return 0;
   }
-  
-  String response = http.getString();
-  http.end();
+
+  // Filter: only the fields the picker + card renderer need.
+  // [0] on arrays applies the filter to all array elements.
+  JsonDocument filter;
+  JsonObject leg = filter["trips"][0]["legs"][0].to<JsonObject>();
+  leg["cancelled"] = true;
+  leg["partCancelled"] = true;
+  JsonObject lo = leg["origin"].to<JsonObject>();
+  lo["plannedDateTime"] = true;
+  lo["actualDateTime"] = true;
+  lo["plannedTrack"] = true;
+  JsonObject ld = leg["destination"].to<JsonObject>();
+  ld["plannedDateTime"] = true;
+  ld["actualDateTime"] = true;
 
   JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, response);
+  DeserializationError err = deserializeJson(doc, http.getStream(),
+                                             DeserializationOption::Filter(filter));
+  http.end();
 
-  if (error) {
-    DBG("Train JSON parse error: "); DBGLN(error.c_str());
-    DBG("Response length: "); DBGLN(response.length());
+  if (err) {
+    DBG("Trip Planner JSON err: "); DBGLN(err.c_str());
     return 0;
   }
 
-  JsonArray deps = doc["payload"]["departures"];
-  if (deps.isNull()) {
-    DBGLN("No departures array in response");
+  JsonArray trips = doc["trips"];
+  if (trips.isNull()) {
+    DBGLN("Trip Planner: no trips[] in response");
     return 0;
   }
 
   int found = 0;
+  for (JsonObject trip : trips) {
+    if (found >= maxCount) break;
+    JsonArray legs = trip["legs"];
+    if (legs.isNull() || legs.size() == 0) continue;
 
-  for (JsonObject dep : deps) {
-    if (found >= max) break;
+    JsonObject firstLeg = legs[0];
+    JsonObject lastLeg  = legs[legs.size() - 1];
 
-    // Check if destination is in the route (case-insensitive substring)
-    JsonArray routeStations = dep["routeStations"];
-    bool stopsAtDest = false;
+    const char* planned = firstLeg["origin"]["plannedDateTime"] | (const char*)nullptr;
+    const char* actual  = firstLeg["origin"]["actualDateTime"]  | (const char*)nullptr;
+    const char* track   = firstLeg["origin"]["plannedTrack"]    | "?";
 
-    for (JsonObject station : routeStations) {
-      const char* name = station["mediumName"].as<const char*>();
-      if (name && strcasestr(name, TRAIN_DESTINATION) != nullptr) {
-        stopsAtDest = true;
-        break;
+    if (!planned || strlen(planned) < 16) continue;
+
+    Departure& d = out[found];
+    d.origin = origin;
+    d.note[0] = 0;  // picker may overwrite in a later step
+
+    // Departure time: prefer actual, fall back to planned. Empty actual does
+    // NOT mean cancelled — it means no realtime data yet (e.g. trip far ahead).
+    const char* useTime = (actual && strlen(actual) >= 16) ? actual : planned;
+    memcpy(d.time, useTime + 11, 5);
+    d.time[5] = 0;
+
+    strlcpy(d.track, track, sizeof(d.track));
+
+    bool firstCancelled = (firstLeg["cancelled"]     | false) ||
+                          (firstLeg["partCancelled"] | false);
+    d.cancelled = firstCancelled;
+
+    d.delay[0] = 0;
+    if (!firstCancelled && actual && strlen(actual) >= 16) {
+      int delayMin = calculateDelay(planned, actual);
+      if (delayMin >= 1) {
+        snprintf(d.delay, sizeof(d.delay), "+%dm", delayMin);
       }
     }
 
-    if (stopsAtDest) {
-      const char* planned = dep["plannedDateTime"].as<const char*>();
-      const char* actual  = dep["actualDateTime"]  | (const char*)nullptr;
-      const char* track   = dep["plannedTrack"]    | "?";
-
-      if (!planned || strlen(planned) < 16) continue;
-
-      // time: "HH:MM" from chars 11..15
-      memcpy(trains[found].time, planned + 11, 5);
-      trains[found].time[5] = 0;
-
-      strlcpy(trains[found].track, track, sizeof(trains[found].track));
-      trains[found].cancelled = dep["cancelled"] | false;
-
-      trains[found].delay[0] = 0;
-      if (actual && strlen(actual) >= 16) {
-        int delayMin = calculateDelay(planned, actual);
-        if (delayMin >= 2) {
-          snprintf(trains[found].delay, sizeof(trains[found].delay), "+%dm", delayMin);
-        }
-      }
-
-      found++;
+    // Uni arrival from the final leg's destination
+    const char* arrPlanned = lastLeg["destination"]["plannedDateTime"] | (const char*)nullptr;
+    const char* arrActual  = lastLeg["destination"]["actualDateTime"]  | (const char*)nullptr;
+    const char* useArr = (arrActual && strlen(arrActual) >= 16) ? arrActual : arrPlanned;
+    d.uniArr[0] = 0;
+    if (useArr && strlen(useArr) >= 16) {
+      memcpy(d.uniArr, useArr + 11, 5);
+      d.uniArr[5] = 0;
     }
+
+    // Transfer status from the final leg (the Breda→TBU sprinter).
+    // Spike showed all DH→TBU trips have 2 legs; single-leg branch is
+    // defensive for unexpected shapes.
+    bool lastCancelled = (lastLeg["cancelled"]     | false) ||
+                         (lastLeg["partCancelled"] | false);
+    if (legs.size() == 1) {
+      d.transfer = TRANSFER_OK;
+    } else if (lastCancelled) {
+      d.transfer = TRANSFER_CANCELLED;
+    } else {
+      const char* lp = lastLeg["origin"]["plannedDateTime"] | (const char*)nullptr;
+      const char* la = lastLeg["origin"]["actualDateTime"]  | (const char*)nullptr;
+      if (lp && la && strlen(lp) >= 16 && strlen(la) >= 16 &&
+          calculateDelay(lp, la) >= 5) {
+        d.transfer = TRANSFER_LATE;
+      } else {
+        d.transfer = TRANSFER_OK;
+      }
+    }
+
+    strlcpy(d.plannedDepartureISO, planned, sizeof(d.plannedDepartureISO));
+
+    found++;
   }
-  
-  DBG("Station "); DBG(stationCode);
-  DBG(": Found "); DBG(found);
-  DBGLN(" trains stopping at destination");
-  
+
+  DBG("fetchTrips from "); DBG(fromStation); DBG(": parsed "); DBGLN(found);
+  DBG("fetchTrips heap after:  "); DBGLN(ESP.getFreeHeap());
   return found;
 }
+

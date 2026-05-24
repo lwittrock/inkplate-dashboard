@@ -27,11 +27,13 @@ const int NIGHT_END = 7;     // 24-hour format
 // TRAIN CONFIGURATION
 // ============================================================================
 
-const char* STATION_CODE_CENTRAL = "GVC";
-const char* STATION_CODE_HS = "GV";
-const char* STATION_NAME_CENTRAL = "Centraal";
-const char* STATION_NAME_HS = "HS";
-const char* TRAIN_DESTINATION = "breda";
+// Origin stations and the single transfer destination. The Trip Planner
+// (NS API v3) is queried twice — GVC → DEST and GV → DEST — and a per-slot
+// picker (A_Calculations.ino) substitutes HS trips when a Centraal slot is
+// disrupted. See drawTrains in C_Display.ino for the card layout.
+const char* STATION_CODE_CENTRAL     = "GVC";
+const char* STATION_CODE_HS          = "GV";
+const char* STATION_CODE_DESTINATION = "TBU";  // Tilburg Universiteit
 
 // ============================================================================
 // WEATHER & DISPLAY CONSTANTS

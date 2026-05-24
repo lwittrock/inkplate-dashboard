@@ -47,12 +47,34 @@ typedef enum {
   THUNDERSTORM
 } WeatherCategory;
 
-// Train departure information
-struct Train {
-  char time[6];   // "HH:MM"
-  char track[6];  // e.g. "12a"
-  char delay[8];  // e.g. "+12m"
+// Which Den Haag station a trip departs from.
+typedef enum { ORIGIN_CTR, ORIGIN_HS } TrainOrigin;
+
+// Status of the transfer at Breda → Tilburg Universiteit.
+typedef enum { TRANSFER_OK, TRANSFER_LATE, TRANSFER_CANCELLED } TransferStatus;
+
+// One picked trip for display, fed by fetchTrips (NS Trip Planner v3) and
+// the per-slot picker (A_Calculations.ino). Carries origin tag, transfer
+// status, and Uni arrival so a single struct drives the card layout.
+struct Departure {
+  TrainOrigin origin;
+  char time[6];                  // "HH:MM" actual departure (falls back to planned)
+  char track[6];                 // "12a"
+  char delay[8];                 // "+12m" or ""
   bool cancelled;
+  char uniArr[6];                // "HH:MM" arrival at TBU
+  TransferStatus transfer;
+  char note[32];                 // set by the picker when an HS trip replaces a CTR slot
+  char plannedDepartureISO[26];  // "2026-05-24T12:19:00+0200" — for cross-origin sort
+};
+
+// Extra current-weather signals not in the legacy fetchOpenMeteo signature.
+// Populated alongside the existing temp/wind/code outputs by the extended
+// Open-Meteo query (current=…,wind_direction_10m; hourly=temperature_2m).
+struct WeatherExtras {
+  int   windDirection;    // degrees from N, 0-360
+  float hourlyTemp[24];   // next 24h starting from current hour
+  int   hourlyCount;      // number of hourly entries actually filled
 };
 
 // Daily weather forecast (calculated from API data)
@@ -98,7 +120,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 #endif
-  DBGLN("\n\n=== DASHBOARD STARTING ===");
+  DBGLN("\n\n=== DASHBOARD v2 (editorial redesign) ===");
   DBG("Wake #"); DBGLN(wakeCounter);
 
   display.begin();
@@ -114,6 +136,7 @@ void setup() {
   DBGLN("Fetching Open-Meteo...");
   float temp = 0, wind = 0;
   int weatherCode = 0;
+  WeatherExtras extras = {};
   DayForecast weekForecast[7];
   int forecastCount = 0;
   float rainData[12];
@@ -121,7 +144,7 @@ void setup() {
   int rainCount = 0;
   bool rainOk = false;
   bool weatherOk = fetchOpenMeteo(
-    temp, wind, weatherCode,
+    temp, wind, weatherCode, extras,
     weekForecast, forecastCount,
     rainData, timeLabels, rainCount, rainOk);
   DBG("Weather: "); DBG(weatherOk ? "OK" : "FAIL");
@@ -133,30 +156,33 @@ void setup() {
   }
 
   // Fetch train data from Central
-  DBGLN("Fetching trains from Central...");
-  Train trainsCentral[3];
-  int trainCountCentral = getTrains(trainsCentral, 3, STATION_CODE_CENTRAL);
-  DBG("Trains from Central: "); DBGLN(trainCountCentral);
+  // Fetch trips from both Centraal and HS to Tilburg Universiteit, then
+  // run the per-slot picker (A_Calculations.ino) to substitute HS trips
+  // when a Centraal slot is disrupted.
+  DBGLN("Fetching trips GVC -> TBU...");
+  Departure ctrRaw[6];
+  int nCtr = fetchTrips(STATION_CODE_CENTRAL, STATION_CODE_DESTINATION, ORIGIN_CTR, ctrRaw, 6);
+  DBG("CTR raw: "); DBGLN(nCtr);
 
-  // Check if all Central trains are cancelled
-  bool allCentralCancelled = true;
-  if (trainCountCentral > 0) {
-    for (int i = 0; i < trainCountCentral; i++) {
-      if (!trainsCentral[i].cancelled) {
-        allCentralCancelled = false;
-        break;
-      }
-    }
-  }
+  DBGLN("Fetching trips GV -> TBU...");
+  Departure hsRaw[6];
+  int nHs = fetchTrips(STATION_CODE_HS, STATION_CODE_DESTINATION, ORIGIN_HS, hsRaw, 6);
+  DBG("HS  raw: "); DBGLN(nHs);
 
-  // Fetch HS trains if Central has no trains OR all are cancelled
-  Train trainsHS[3];
-  int trainCountHS = 0;
-  if (trainCountCentral == 0 || allCentralCancelled) {
-    DBGLN("Fetching trains from HS...");
-    trainCountHS = getTrains(trainsHS, 3, STATION_CODE_HS);
-    DBG("Trains from HS: "); DBGLN(trainCountHS);
+  Departure departures[3];
+  int departureCount = pickDepartures(ctrRaw, nCtr, hsRaw, nHs, departures);
+  DBG("Picked slots: "); DBGLN(departureCount);
+#if DEBUG_LOG
+  for (int i = 0; i < departureCount; i++) {
+    DBG("  slot "); DBG(i);
+    DBG(": "); DBG(departures[i].origin == ORIGIN_HS ? "HS  " : "CTR ");
+    DBG(departures[i].time);
+    DBG(" trk="); DBG(departures[i].track);
+    DBG(" cancelled="); DBG(departures[i].cancelled ? "Y" : "N");
+    DBG(" delay="); DBG(departures[i].delay[0] ? departures[i].delay : "-");
+    DBG(" note="); DBGLN(departures[i].note[0] ? departures[i].note : "-");
   }
+#endif
 
   // Network done — power down WiFi before the slow display refresh.
   WiFi.disconnect(true);
@@ -168,11 +194,10 @@ void setup() {
 
   DBGLN("Calling updateDisplay...");
   updateDisplay(
-    temp, wind, weatherCode, weatherOk,
+    temp, wind, weatherCode, weatherOk, extras,
     rainData, timeLabels, rainCount, rainOk,
     weekForecast, forecastCount, weatherOk,
-    trainsCentral, trainCountCentral,
-    trainsHS, trainCountHS
+    departures, departureCount
   );
   DBGLN("Display updated!");
 

@@ -15,3 +15,6 @@ Thumbs.db
 
 # Claude Code local overrides
 .claude/settings.local.json
+
+# Personal working notes (free-form scratch file at repo root)
+TODO

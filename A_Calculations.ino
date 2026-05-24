@@ -73,6 +73,128 @@ WeatherCategory calculateDailyWeather(
 // TIME CALCULATIONS
 // ============================================================================
 
+// Parse Trip Planner ISO 8601 ("2026-05-24T12:19:00+0200") into a time_t
+// in the device's local timezone. Both Trip Planner and the device clock
+// run on Amsterdam time (configTzTime + timezone=auto on Open-Meteo), so
+// treating the wall-clock fields as local — without applying the +0200
+// offset — yields the correct epoch. tm_isdst=-1 lets mktime decide DST.
+static time_t parseISOToLocal(const char* iso) {
+  if (!iso || strlen(iso) < 19) return 0;
+  struct tm t = {};
+  t.tm_year = (iso[0]-'0')*1000 + (iso[1]-'0')*100 + (iso[2]-'0')*10 + (iso[3]-'0') - 1900;
+  t.tm_mon  = (iso[5]-'0')*10 + (iso[6]-'0') - 1;
+  t.tm_mday = (iso[8]-'0')*10 + (iso[9]-'0');
+  t.tm_hour = (iso[11]-'0')*10 + (iso[12]-'0');
+  t.tm_min  = (iso[14]-'0')*10 + (iso[15]-'0');
+  t.tm_sec  = (iso[17]-'0')*10 + (iso[18]-'0');
+  t.tm_isdst = -1;
+  return mktime(&t);
+}
+
+// "+8m" -> 8, "+12m" -> 12, "" -> 0.
+static int parseDelayMin(const char* s) {
+  if (!s || !s[0]) return 0;
+  const char* p = s;
+  if (*p == '+') p++;
+  return atoi(p);
+}
+
+// Per-slot train picker. For each of 3 slots, take the next un-picked
+// Centraal trip; if it's healthy (not cancelled, delay < 10 min) use it.
+// Otherwise look for an HS trip departing within ±20 min of the Centraal's
+// planned time, not cancelled, and at least 5 min in the future so the user
+// can actually get to HS. Falls back to the bad Centraal trip if no HS
+// alternative exists. Adjacent duplicate trips (same plannedDepartureISO)
+// are skipped — NS returns multiple routing options for the same physical
+// train.
+int pickDepartures(const Departure ctr[], int nCtr,
+                   const Departure hs[],  int nHs,
+                   Departure out[3]) {
+  time_t now = time(nullptr);
+  time_t prevPickTime = 0;
+
+  bool ctrUsed[12] = {};
+  bool hsUsed[12]  = {};
+
+  int picked = 0;
+  while (picked < 3) {
+    // Find next un-picked Centraal trip departing after the previous pick.
+    int ctrIdx = -1;
+    time_t ctrTime = 0;
+    for (int i = 0; i < nCtr && i < 12; i++) {
+      if (ctrUsed[i]) continue;
+      time_t t = parseISOToLocal(ctr[i].plannedDepartureISO);
+      if (t == 0 || t <= prevPickTime) continue;
+      ctrIdx  = i;
+      ctrTime = t;
+      break;
+    }
+    if (ctrIdx < 0) break;
+
+    // Dedup: mark every entry with the same plannedDepartureISO as used.
+    for (int i = 0; i < nCtr && i < 12; i++) {
+      if (strcmp(ctr[i].plannedDepartureISO, ctr[ctrIdx].plannedDepartureISO) == 0) {
+        ctrUsed[i] = true;
+      }
+    }
+
+    int ctrDelay = parseDelayMin(ctr[ctrIdx].delay);
+    bool ctrGood = !ctr[ctrIdx].cancelled && ctrDelay < 10;
+
+    if (ctrGood) {
+      out[picked] = ctr[ctrIdx];
+      out[picked].note[0] = 0;
+    } else {
+      // Look for an HS substitute around the same time.
+      int hsIdx = -1;
+      for (int i = 0; i < nHs && i < 12; i++) {
+        if (hsUsed[i] || hs[i].cancelled) continue;
+        time_t t = parseISOToLocal(hs[i].plannedDepartureISO);
+        if (t == 0) continue;
+        long deltaMin = (long)((t - ctrTime) / 60);
+        if (deltaMin < -20 || deltaMin > 20) continue;
+        if (t < now + 5 * 60) continue;          // must be reachable
+        hsIdx = i;
+        break;
+      }
+
+      if (hsIdx >= 0) {
+        for (int i = 0; i < nHs && i < 12; i++) {
+          if (strcmp(hs[i].plannedDepartureISO, hs[hsIdx].plannedDepartureISO) == 0) {
+            hsUsed[i] = true;
+          }
+        }
+        out[picked] = hs[hsIdx];
+        if (ctr[ctrIdx].cancelled) {
+          strlcpy(out[picked].note, "Centraal cancelled", sizeof(out[picked].note));
+        } else {
+          snprintf(out[picked].note, sizeof(out[picked].note),
+                   "Centraal %s", ctr[ctrIdx].delay);
+        }
+      } else {
+        // No HS alternative — show the disrupted Centraal anyway.
+        out[picked] = ctr[ctrIdx];
+        out[picked].note[0] = 0;
+      }
+    }
+
+    prevPickTime = ctrTime;  // anchor next slot on the CTR timeline
+    picked++;
+  }
+
+  return picked;
+}
+
+// 8-bucket cardinal compass from a meteorological wind bearing (degrees from N,
+// clockwise). 0° → "N", 45° → "NE", etc. Buckets are 45° wide and centered on
+// the cardinal/inter-cardinal points (so 23–67° is "NE").
+const char* cardinalCompass(int bearingDeg) {
+  static const char* labels[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
+  int b = ((bearingDeg % 360) + 360) % 360;  // normalise into [0, 360)
+  int idx = (int)(((float)b + 22.5f) / 45.0f) % 8;
+  return labels[idx];
+}
+
 // Calculate delay in minutes from ISO 8601 timestamps.
 // Handles cross-midnight: if actualTotal < plannedTotal assume the actual time
 // wrapped past midnight (e.g. planned 23:58, actual 00:02 → +4 min).

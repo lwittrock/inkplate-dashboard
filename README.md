@@ -69,7 +69,7 @@ GitHub Actions (see [`.github/workflows/release.yml`](.github/workflows/release.
 
 App-level rollback catches crash loops: if a new firmware fails to complete `setup()` three boots in a row, the device reverts to the previous partition. Silent misbehaviour (boots but renders wrong content) isn't caught — local USB test before tagging is the only mitigation.
 
-See [docs/ota-updates-plan.md](docs/ota-updates-plan.md) for the full design and the trail of decisions/hiccups during the 3-phase build.
+See [CLAUDE.md](CLAUDE.md) — sections "OTA gotchas", "OTA design decisions", "OTA out of scope" — for the architecture, design rationale, and known limitations.
 
 CI requires two GitHub Actions secrets named `CONFIG_H` and `SECRETS_H` containing the whole-file contents of `config.h` and `secrets.h` respectively — CI is the source of truth for what gets shipped, not your local files.
 

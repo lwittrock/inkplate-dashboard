@@ -217,12 +217,33 @@ These were discovered during integration spikes and are not derivable from the c
   3. Update the `CONFIG_H` Actions secret on GitHub with the new field name + value.
   4. ONLY THEN tag a new release. Tagging before step 3 gives you a CI compile failure (`error: 'NEW_FIELD' was not declared`); tagging before step 2 gives you a local-build failure next time you USB-flash.
   5. Verify the v?? release built green on the Actions page before walking away.
-- **RTC RAM does NOT survive OTA-induced reboot on this hardware.** Despite ESP-IDF docs claiming `RTC_DATA_ATTR` survives `esp_restart()`, the OTA path (`httpUpdate.update()` → SW_CPU_RESET) clears RTC slow memory on the Inkplate6V2. Observed: `wakeCounter` resets to 0, `otaRtcMagic` mismatches → `initOtaState()` resets everything including `otaPendingVersion`. **Practical impact:** the rollback-after-OTA-failure path is partially broken — if a new firmware crashes on its very first boot before reaching `markFirmwareValid()`, the lost `pendingVersion` means subsequent boot-failure detection can't identify which version to roll back from. Mitigation candidates if this ever bites: `RTC_NOINIT_ATTR` (untested), NVS-backed persistence (slower but bulletproof), or accept the limitation since hand-rolled USB recovery is always available.
+- **RTC RAM does NOT survive OTA-induced reboot on this hardware. Accepted limitation.** Despite ESP-IDF docs claiming `RTC_DATA_ATTR` survives `esp_restart()`, the OTA path (`httpUpdate.update()` → SW_CPU_RESET) clears RTC slow memory on the Inkplate6V2. Observed: `wakeCounter` resets to 0, `otaRtcMagic` mismatches → `initOtaState()` resets everything including `otaPendingVersion`. **Failure mode it leaves open:** if a newly-OTA'd firmware crashes on its very first boot (before reaching `markFirmwareValid()`), `pendingVersion` is already gone, so rollback never identifies "this version is bad" and the device is stuck. Recovery is USB reflash. Mitigation NOT pursued because the only realistic trigger is "binary boots fine on bench but crashes on wall device for hardware-specific reason" — unlikely given local USB test before tagging is standard. Untried fix candidates if this ever bites: `RTC_NOINIT_ATTR` or NVS-backed persistence.
 - **`markFirmwareValid()` must run AFTER `initHardware()` but BEFORE `handleNightMode()`.** The original "end of setup()" plan was broken: `handleNightMode()` calls `goToSleep()` and never returns during 23:30–06:30, so during the night every 15-min wake would increment `bootAttempts` without resetting → false rollback within ~45 minutes. Rule: "if WiFi+NTP came up, firmware is healthy enough to commit to."
 - **`checkForUpdates()` runs BEFORE `handleNightMode()`** so OTA can fire on night wakes (first wake after midnight triggers it). New firmware then has ~6 hours to soak before the dashboard wakes for the morning — if it rolls back, the user never sees the crash cycle.
 - **"dev" lexical compare exception is required for local-build → OTA upgrade path.** `FIRMWARE_VERSION="dev"` lexically sorts > all digit-starting versions because `'d'` > `'2'` in ASCII. Without an explicit `localIsDev` exception in `checkForUpdates()`, a freshly USB-flashed local build can never OTA-pull a tagged release. Don't remove the exception.
 - **GitHub release asset URLs 302-redirect** from `github.com/.../releases/download/...` to `objects.githubusercontent.com`. `httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS)` is required. Without it the download returns 0 bytes silently.
 - **Serial output between USB upload and serial monitor reconnect is lost.** The boot banner and `Wake #` from the very first boot after `arduino-cli upload` are typically missed because Arduino IDE closes the serial port for upload and the user reopens it after the hard reset. Don't conclude "the firmware didn't reboot" just because you didn't see those lines.
+
+**OTA design decisions (the WHYs, since the code shows the HOWs):**
+- **Daily check, not per-wake.** Per-wake checks would add ~2.9 mAh/day (≈10% of baseline) vs ~0.03 mAh/day for daily. No practical upside since tag→deploy lag of one night is fine.
+- **First wake after midnight, not 7am.** Lets the device update while the user is asleep; new firmware has ~6 hours of soak time before morning. Crash loops happen out of view.
+- **Plain text manifest, not JSON.** Two lines: version, then binary URL. No parser, no schema versioning, no heap pressure. We slurp into `String` and split on `\n`.
+- **Manifest hosted on `firmware-latest` orphan branch, not GitHub Pages.** Pages requires repo setup; raw branch needs none. Manifest URL: `raw.githubusercontent.com/.../firmware-latest/version.txt`. Binary itself stays in releases (free UI + history).
+- **App-level rollback, NOT bootloader rollback.** Stock Arduino-ESP32 doesn't enable `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, so `esp_ota_mark_app_valid_cancel_rollback()` is a no-op. We use an `RTC_DATA_ATTR` boot-attempts counter + `esp_ota_set_boot_partition()` instead — same outcome, no bootloader rebuild.
+- **3 boot-failure threshold.** Tolerates one transient failure (WiFi blip, brown-out) before rolling back. Smaller would false-positive; larger means longer until recovery.
+- **`min_spiffs` partition, not `default`.** Two 1.9 MB OTA slots with 190 KB SPIFFS. Current binary is ~1.2 MB so fits comfortably; future headroom matters.
+- **No SHA256 verification of downloaded binary.** ESP32 OTA validates the binary header magic but not content hash. Personal device + own GitHub releases — full signing is disproportionate complexity.
+- **Whole-file `CONFIG_H` / `SECRETS_H` Actions secrets, not field-by-field.** ~10 values; whole-file is simpler. Switch later if granular changes become annoying.
+
+**OTA out of scope (deliberately not doing — don't re-evaluate without a reason):**
+- Signed firmware updates (overkill for this threat model)
+- Delta updates (1.2 MB full binary is fine, GitHub bandwidth is free)
+- Multiple staged environments / canary releases (one device, one user)
+- Remote logging back to a server (serial logs over USB cover all debugging needs)
+- TLS certificate validation (using `setInsecure()` everywhere, consistent with project posture)
+- Custom bootloader with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` (app-level rollback achieves the same outcome with much less complexity)
+- Battery-threshold gating of OTA checks (no battery monitoring code exists today; not worth adding just for this)
+- A manual "skip OTA" recovery path via the WAKE button (frame is fully enclosed, button not accessible; physical pull + USB reflash is the only recovery if rollback also fails)
 
 **Battery optimizations consciously skipped:**
 - TLS cert pinning — small power win, big code/maintenance cost. Defer until `setInsecure()` stops working (which it isn't).

@@ -99,6 +99,47 @@ static int parseDelayMin(const char* s) {
   return atoi(p);
 }
 
+// Remove "dominated" trips in place: a trip is dominated when another trip
+// in the same list departs strictly later AND arrives no later. Such trips
+// are strictly worse — you'd always take the later-departing one. NS
+// sometimes returns slow routings (extra stops, indirect path) alongside
+// the fast direct trip; this strips them before the picker sees them.
+//
+// Compares d.time / d.uniArr "HH:MM" strings — strcmp orders correctly
+// within the dashboard's active window (night mode sleeps through midnight).
+// Cancelled trips never dominate (a cancelled "later" trip can't legitimately
+// replace an earlier one) and are never themselves dropped via dominance
+// (the picker needs to see them to surface the disruption).
+int filterDominatedTrips(Departure list[], int n) {
+  if (n <= 1) return n;
+  bool drop[12] = {};
+  int cap = n < 12 ? n : 12;
+  for (int i = 0; i < cap; i++) {
+    if (list[i].cancelled) continue;
+    if (!list[i].time[0] || !list[i].uniArr[0]) continue;
+    for (int j = 0; j < cap; j++) {
+      if (i == j || list[j].cancelled) continue;
+      if (!list[j].time[0] || !list[j].uniArr[0]) continue;
+      if (strcmp(list[j].time, list[i].time) > 0 &&
+          strcmp(list[j].uniArr, list[i].uniArr) <= 0) {
+        DBG("  drop dominated trip "); DBG(list[i].time);
+        DBG("->"); DBG(list[i].uniArr);
+        DBG(" (beaten by "); DBG(list[j].time);
+        DBG("->"); DBG(list[j].uniArr); DBGLN(")");
+        drop[i] = true;
+        break;
+      }
+    }
+  }
+  int kept = 0;
+  for (int i = 0; i < cap; i++) {
+    if (drop[i]) continue;
+    if (kept != i) list[kept] = list[i];
+    kept++;
+  }
+  return kept;
+}
+
 // Per-slot train picker. For each of 3 slots, take the next un-picked
 // Centraal trip; if it's healthy (not cancelled, delay < 10 min) use it.
 // Otherwise look for an HS trip departing within ±20 min of the Centraal's

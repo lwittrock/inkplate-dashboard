@@ -233,11 +233,15 @@ void setup() {
   Departure ctrRaw[6];
   int nCtr = fetchTrips(STATION_CODE_CENTRAL, STATION_CODE_DESTINATION, ORIGIN_CTR, ctrRaw, 6);
   DBG("CTR raw: "); DBGLN(nCtr);
+  nCtr = filterDominatedTrips(ctrRaw, nCtr);
+  DBG("CTR after dominance filter: "); DBGLN(nCtr);
 
   DBGLN("Fetching trips GV -> TBU...");
   Departure hsRaw[6];
   int nHs = fetchTrips(STATION_CODE_HS, STATION_CODE_DESTINATION, ORIGIN_HS, hsRaw, 6);
   DBG("HS  raw: "); DBGLN(nHs);
+  nHs = filterDominatedTrips(hsRaw, nHs);
+  DBG("HS  after dominance filter: "); DBGLN(nHs);
 
   Departure departures[3];
   int departureCount = pickDepartures(ctrRaw, nCtr, hsRaw, nHs, departures);

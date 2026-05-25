@@ -1,10 +1,6 @@
 # Inkplate 6 Weather & Train Dashboard
 
-An e-paper dashboard for my Delft commute — wakes every 15 minutes, fetches live weather (Buienradar) and the next three trains from Den Haag to Tilburg Universiteit (NS), draws a full-screen editorial layout, then deep-sleeps until the next cycle.
-
-![Dashboard mockup](design/mockup.png)
-
-> *Mockup rendered from [design/mockup.html](design/mockup.html) — open at native 800×600 to see the source of truth.*
+An e-paper dashboard for my commute — wakes every 15 minutes, fetches live weather (Buienradar) and the next three trains from Den Haag to Tilburg Universiteit (NS), draws a full-screen editorial layout, then deep-sleeps until the next cycle.
 
 Personal hobby project, sharing in case it's useful as a reference. Not actively supporting forks — if you want to adapt it to your city/route, expect to read the code.
 

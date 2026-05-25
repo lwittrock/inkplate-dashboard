@@ -8,7 +8,7 @@ E-paper weather + train dashboard running on an **Inkplate 6** (ESP32-based, 800
 **Origin stations:** Den Haag Centraal (GVC) and Den Haag HS (GV)
 **Destination:** Tilburg Universiteit (TBU) — both origins queried via NS Trip Planner v3, a per-slot picker substitutes HS trips when a Centraal slot is disrupted.
 
-**Design source of truth:** [design/mockup.html](design/mockup.html) — open in a browser at native 800×600 to see the editorial layout. Every Y coordinate in `C_Display.ino` is copied pixel-accurate from the mockup; cross-check before moving anything.
+**Design source of truth:** the rendered display itself, plus the absolute Y coordinates and section comments in [C_Display.ino](C_Display.ino). An earlier SVG mockup (`design/mockup.html`) seeded the layout but is no longer maintained.
 
 ---
 
@@ -99,7 +99,7 @@ y=474  │ DEPARTURES · TO BREDA — 3 cards × 220 px (CTR or HS pill)   │
 y=590  └─ FOOTER: updated HH:MM + battery icon ──────────────────────┘
 ```
 
-All Y coordinates are absolute (pixel-accurate to `design/mockup.html`).
+All Y coordinates are absolute; section comments in `C_Display.ino` annotate each band.
 
 ---
 
@@ -179,7 +179,7 @@ python design/downscale_icons.py
 - **String vs char[]**: Prefer `char buf[N]` + `sprintf` over `String` objects on the heap; the ESP32 has limited RAM and heap fragmentation is a real risk on long-running embedded systems.
 - **1-bit display**: All drawing is BLACK or WHITE only. `display.display()` causes a full e-ink refresh (~1–2 s, some flicker). Partial refresh runs in between (`FULL_REFRESH_EVERY` controls cadence).
 - **Timezone**: System time uses `configTzTime(TIMEZONE, ...)`, so `TIMEZONE` must be a **POSIX TZ string** (e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`) — ESP32 has no IANA tzdb, so `"Europe/Amsterdam"` silently falls back to UTC. Open-Meteo URLs use `timezone=auto` (derived from lat/lon) so they don't depend on `TIMEZONE`. Trip Planner ISO timestamps are parsed by `parseISOToLocal()` (treats fields as local since both device and API agree on Amsterdam TZ).
-- **Pixel-accurate layout**: The display sections use absolute Y coordinates copied from `design/mockup.html`. Cross-check the mockup before moving anything.
+- **Pixel-accurate layout**: The display sections use absolute Y coordinates with section-band comments in `C_Display.ino`. Treat those comments as the layout contract — adjusting one band without updating its neighbours will silently overlap content.
 
 ---
 

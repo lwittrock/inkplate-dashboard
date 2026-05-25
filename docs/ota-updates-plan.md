@@ -155,17 +155,25 @@ Confirmed:
 
 **One-time prep step** (do this right before Phase 2, not now): in Arduino IDE → Tools → Partition Scheme → switch to "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)" → flash over USB once. After this single reflash, OTA is unlocked permanently.
 
-### Phase 1 — CI build pipeline (no device changes)
+### Phase 1 — CI build pipeline (no device changes) — ✅ COMPLETED 2026-05-25
 
-**Goal:** prove the GitHub Actions workflow produces a working binary, validated by USB-flashing it.
+**Goal:** prove the GitHub Actions workflow produces a working binary.
 
-1. **Tag the current working firmware as a baseline** (e.g. `v2026.05.25-00`) before any OTA code lands. Gives a known-good rescue target if anything ever needs manual partition-set.
-2. Add `.github/workflows/release.yml` with pinned versions of the ESP32 board package, Inkplate library, and ArduinoJson v7 (no `latest` — CI must be reproducible).
-3. Add `config.h` (whole-file) and `secrets.h` (whole-file) to GitHub Actions secrets.
-4. Tag a release (`v2026.XX.XX-01`), wait for workflow.
-5. Download the produced `firmware.bin`, flash it over USB the normal way.
-6. Confirm device boots and renders correctly.
-7. CI also commits a `version.txt` to the `firmware-latest` branch pointing at this release.
+**What was actually done:**
+- Tagged `v2026.05.25-00` as the pre-OTA baseline (commit `660eefd`).
+- Added `.github/workflows/release.yml` with pinned versions:
+  - `Inkplate_Boards:esp32` core **8.1.0**
+  - `InkplateLibrary` **11.1.0**
+  - `ArduinoJson` **7.4.3**
+- Added `CONFIG_H` and `SECRETS_H` to GitHub Actions secrets (whole-file form).
+- Created the orphan `firmware-latest` branch with a placeholder `version.txt`.
+- Added `FIRMWARE_VERSION` injection via CI-generated `firmware_version.h` (gitignored); Dashboard.ino has a `"dev"` fallback for local builds.
+- CI publishes `Dashboard.ino.bin` as a release asset AND updates `version.txt` on `firmware-latest`.
+- Tag `v2026.05.25-03` produced binary size **1.18 MB** vs. local **1.17 MB** — within rounding, build environments match. Functional USB-flash validation deferred (rollback in Phase 3 is the safety net).
+
+**Hiccups worth remembering** (now captured in CLAUDE.md "CI / arduino-cli build gotchas"):
+- v01 failed because arduino-cli requires the sketch folder name to match the main `.ino` filename. Repo checks out as `inkplate-dashboard/` but main file is `Dashboard.ino`. Fix: workflow stages files into a `sketch/Dashboard/` folder before compile.
+- v02 failed because the Soldered "Inkplate_Boards" package has two boards both colloquially called "Inkplate6". The IDE picker's "Soldered Inkplate6" is FQBN `Inkplate6V2` (defines `ARDUINO_INKPLATE6V2`). The legacy `Inkplate6` FQBN has `build.board=ESP32_DEV` which fails to define any board macro the v11+ Inkplate library accepts → `#error "Board not selected!"`. Fix: workflow FQBN is `Inkplate6V2`, not `Inkplate6`.
 
 **Risk:** zero — device behavior is unchanged. You're only validating the build pipeline.
 

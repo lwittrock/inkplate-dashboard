@@ -168,6 +168,8 @@ void setup() {
   display.begin();
   DBGLN("Display initialized");
 
+  initOtaState();   // reset OTA RTC state if cold boot (sentinel mismatch)
+
   initHardware();
   DBGLN("Hardware initialized");
 
@@ -187,6 +189,10 @@ void setup() {
   int rainCount = 0;
   bool forecastOk = fetchOpenMeteo(extras, weekForecast, forecastCount);
   DBG("Forecast: "); DBGLN(forecastOk ? "OK" : "FAIL");
+
+  // OTA manifest check — opportunistic, piggy-backs on the active WiFi
+  // session from the forecast fetch. Log-only in Phase 2.
+  checkForUpdates();
 
   // Buienradar — current conditions. Live KNMI station observations.
   DBGLN("Fetching Buienradar (now)...");

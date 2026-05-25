@@ -84,6 +84,19 @@ const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ stri
 // #define WIFI_DNS       "192.168.1.1"
 
 // ============================================================================
+// OPTIONAL: OTA (Over-The-Air firmware updates)
+// ============================================================================
+// See docs/ota-updates-plan.md. The manifest URL has a sensible default in
+// D_OTA.ino; override here only if you fork the repo or change the manifest
+// hosting branch.
+// #define OTA_MANIFEST_URL "https://raw.githubusercontent.com/<you>/<repo>/firmware-latest/version.txt"
+//
+// Phase 2 development knob: force the OTA check on every wake (bypasses
+// the once-per-day gate AND the "hour >= NIGHT_END" gate). Turn OFF for
+// production — every-wake checks add ~0.03 mAh per wake and accumulate.
+// #define OTA_TEST_FORCE_CHECK 1
+
+// ============================================================================
 // OPTIONAL: REFRESH STRATEGY
 // ============================================================================
 // Number of wakes between full e-ink refreshes. In between, partial updates

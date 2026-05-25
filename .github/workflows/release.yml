@@ -32,7 +32,10 @@ jobs:
       # The legacy "Inkplate6" FQBN has build.board=ESP32_DEV which fails
       # to define ARDUINO_INKPLATE6 — the macro the v11+ library needs.
       # "Soldered Inkplate6" in the IDE picker = Inkplate6V2 internally.
-      FQBN: Inkplate_Boards:esp32:Inkplate6V2
+      # Partition: min_spiffs gives two 1.9 MB OTA slots — required for OTA.
+      # Device must be USB-flashed once with this partition to lay down the
+      # 2-slot table; subsequent updates can flow over OTA.
+      FQBN: Inkplate_Boards:esp32:Inkplate6V2:PartitionScheme=min_spiffs
 
       # Pinned versions — reproducible builds. Update only deliberately.
       # Verified against local Arduino IDE on 2026-05-25.

@@ -249,14 +249,15 @@ static const char* makeGreeting(struct tm &timeinfo,
   struct { int mon; int mday; const char* text; } specials[] = {
     {  0,  1, "New year" },
     {  2, 20, "First day of spring" },
-    {  3, 27, "Koningsdag" },           // King's Day (NL)
+    {  3, 27, "Koningsdag" },           
     {  4,  5, "Liberation Day" },
     {  5, 21, "Midsummer" },
     {  8, 22, "First day of autumn" },
     { 11, 21, "Midwinter" },
-    { 11, 25, "Christmas" },
-    { 11, 26, "Boxing Day" },
-    { 11, 31, "Year's end" },
+    { 11, 24, "Christmas Eve" },
+    { 11, 25, "First Day of Christmas" },
+    { 11, 26, "Second Day of Christmas" },
+    { 11, 31, "New Year's Eve" },
   };
   for (auto& s : specials) {
     if (timeinfo.tm_mon == s.mon && timeinfo.tm_mday == s.mday) return s.text;
@@ -271,8 +272,8 @@ static const char* makeGreeting(struct tm &timeinfo,
 
   const char* adj;
   switch (cat) {
-    case CLEAR:         adj = "Bright";  break;
-    case PARTLY_CLOUDY: adj = "Mild";    break;
+    case CLEAR:         adj = "Sunny";  break;
+    case PARTLY_CLOUDY: adj = "Semi sunny";    break;
     case OVERCAST:      adj = "Grey";    break;
     case FOG:           adj = "Foggy";   break;
     case DRIZZLE:       adj = "Drizzly"; break;

@@ -87,13 +87,23 @@ jobs:
           EOF
           echo "FIRMWARE_VERSION=$VERSION" >> "$GITHUB_ENV"
 
+      - name: Stage sketch into Dashboard/ folder
+        # arduino-cli requires the sketch folder to match the main .ino filename.
+        # Repo checks out as "inkplate-dashboard/" but the main file is Dashboard.ino,
+        # so copy the sketch sources into a Dashboard/ subfolder before compile.
+        run: |
+          mkdir -p sketch/Dashboard
+          cp *.ino *.h sketch/Dashboard/
+          cp -r Fonts sketch/Dashboard/
+          ls -la sketch/Dashboard/
+
       - name: Compile
         run: |
           arduino-cli compile \
             --fqbn "$FQBN" \
             --output-dir build \
             --warnings default \
-            .
+            sketch/Dashboard
           ls -la build/
 
       - name: Create GitHub release

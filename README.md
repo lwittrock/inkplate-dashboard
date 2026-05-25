@@ -33,9 +33,11 @@ That's it. No extra wiring.
 
 ## Flashing
 
+You only flash via USB **once**. After that, the device pulls firmware updates over the air from this repo's GitHub releases — see "Updates" below.
+
 1. **Install the Arduino IDE 2.x** and the Inkplate board package (board manager URL: `https://raw.githubusercontent.com/SolderedElectronics/Dasduino-Board-Definitions-for-Arduino-IDE/master/package_Dasduino_Boards_index.json`).
 2. **Install libraries** via the IDE library manager:
-   - `Inkplate` (by Soldered Electronics)
+   - `InkplateLibrary` (by Soldered Electronics)
    - `ArduinoJson` **v7** (the sketch uses the v7 `JsonDocument` API; v6 will not compile)
 3. **Copy `config.h.example` → `config.h`** and edit your location, station codes, and any other constants you care about.
 4. **Create `secrets.h`** with your credentials:
@@ -45,10 +47,33 @@ That's it. No extra wiring.
    const char* NS_API_KEY    = "your-ns-api-key";
    ```
    You'll need a free API key from [NS API portal](https://apiportal.ns.nl/) (the Reisinformatie subscription works for v3).
-5. **Open `Dashboard.ino` in Arduino IDE.** All `.ino` files in the folder are compiled together.
-6. **Select board:** `Inkplate6`, pick your COM port, hit **Upload**.
+5. **Select board** "Soldered Inkplate6" (NOT "e-radionica.com Inkplate6" — see [CLAUDE.md](CLAUDE.md) gotcha note).
+6. **Select Partition Scheme** → "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)". This is required so the chip has two app slots and OTA can ever work. Without it, the device runs fine but is stuck on USB-only updates forever.
+7. **Open `Dashboard.ino` in Arduino IDE.** All `.ino` files in the folder are compiled together.
+8. **Pick your COM port, hit Upload.**
 
 (Optional) Set `#define DEBUG_LOG 1` in `config.h` to get serial logs at 115200 baud.
+
+---
+
+## Updates (OTA)
+
+Once the device is on the wall and the initial flash has the OTA-capable partition scheme, you never need physical access again. Editing the dashboard becomes:
+
+```sh
+git tag v2026.MM.DD-NN
+git push origin v2026.MM.DD-NN
+```
+
+GitHub Actions (see [`.github/workflows/release.yml`](.github/workflows/release.yml)) builds the binary and publishes it as a release asset. The device checks for a new version once per day (shortly after midnight Amsterdam time) by fetching `version.txt` from the `firmware-latest` branch. If newer, it downloads + flashes + reboots — all while the user is asleep, giving any new firmware ~6 hours to soak before morning.
+
+App-level rollback catches crash loops: if a new firmware fails to complete `setup()` three boots in a row, the device reverts to the previous partition. Silent misbehaviour (boots but renders wrong content) isn't caught — local USB test before tagging is the only mitigation.
+
+See [docs/ota-updates-plan.md](docs/ota-updates-plan.md) for the full design and the trail of decisions/hiccups during the 3-phase build.
+
+CI requires two GitHub Actions secrets named `CONFIG_H` and `SECRETS_H` containing the whole-file contents of `config.h` and `secrets.h` respectively — CI is the source of truth for what gets shipped, not your local files.
+
+---
 
 For everything else — architecture, render pipeline, gotchas — see [CLAUDE.md](CLAUDE.md). It's written for an LLM but reads fine for humans and is the most up-to-date design doc.
 

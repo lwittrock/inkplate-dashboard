@@ -2,6 +2,10 @@
 config.h
 secrets.h
 
+# Generated at build time by CI (or by a future local build script).
+# Local builds use the fallback in Dashboard.ino if this file is missing.
+firmware_version.h
+
 # Arduino build artifacts
 build/
 *.elf

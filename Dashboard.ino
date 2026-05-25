@@ -12,6 +12,16 @@
 #include "config.h"
 #include "icons.h"
 
+// Firmware version: CI writes firmware_version.h at build time (see
+// .github/workflows/release.yml). Local builds without that header
+// fall through to "dev" so the sketch still compiles in Arduino IDE.
+#if __has_include("firmware_version.h")
+  #include "firmware_version.h"
+#endif
+#ifndef FIRMWARE_VERSION
+  #define FIRMWARE_VERSION "dev"
+#endif
+
 // ============================================================================
 // DEBUG LOGGING
 // ============================================================================
@@ -152,6 +162,7 @@ void setup() {
   delay(200);
 #endif
   DBGLN("\n\n=== DASHBOARD v2 (editorial redesign) ===");
+  DBG("FW: "); DBGLN(FIRMWARE_VERSION);
   DBG("Wake #"); DBGLN(wakeCounter);
 
   display.begin();

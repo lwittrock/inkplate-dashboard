@@ -1,0 +1,121 @@
+name: Build & Release Firmware
+
+# Trigger only on digit-starting tags (v2026.05.25-01 yes; v-experiment no).
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: write   # needed to create releases AND push to firmware-latest
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      # ----------------------------------------------------------------------
+      # VERIFY THESE AGAINST YOUR LOCAL ARDUINO IDE BEFORE FIRST RUN.
+      # If the workflow fails on `core install` or `compile`, adjust here.
+      # ----------------------------------------------------------------------
+
+      # Board manager URL — your Arduino IDE has this under
+      # File → Preferences → "Additional boards manager URLs"
+      # (this is the Soldered/e-Radionica URL; replace if yours differs).
+      BOARDS_URL: https://raw.githubusercontent.com/SolderedElectronics/Dasduino-Board-Definitions-for-Arduino-IDE/master/package_Dasduino_Boards_index.json
+
+      # Core ID — typically <package>:esp32. Find via:
+      #   arduino-cli core search inkplate --additional-urls $BOARDS_URL
+      CORE_ID: Inkplate_Boards:esp32
+
+      # FQBN (Fully Qualified Board Name) for Inkplate6. Find via:
+      #   arduino-cli board listall --additional-urls $BOARDS_URL | grep -i inkplate
+      FQBN: Inkplate_Boards:esp32:Inkplate6
+
+      # Pinned versions — reproducible builds. Update only deliberately.
+      # Verified against local Arduino IDE on 2026-05-25.
+      CORE_VERSION: "8.1.0"
+      INKPLATE_LIB_VERSION: "11.1.0"
+      ARDUINOJSON_VERSION: "7.4.3"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up arduino-cli
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Configure board manager + install core
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config add board_manager.additional_urls "$BOARDS_URL"
+          arduino-cli core update-index
+          arduino-cli core install "${CORE_ID}@${CORE_VERSION}"
+          # Log installed cores + boards for debugging future failures.
+          arduino-cli core list
+          arduino-cli board listall | grep -i inkplate || true
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib install "InkplateLibrary@${INKPLATE_LIB_VERSION}"
+          arduino-cli lib install "ArduinoJson@${ARDUINOJSON_VERSION}"
+          arduino-cli lib list
+
+      - name: Inject secrets and config
+        env:
+          # Whole-file secrets — copy the contents of your local config.h /
+          # secrets.h into these GitHub Actions secrets exactly as-is.
+          CONFIG_H: ${{ secrets.CONFIG_H }}
+          SECRETS_H: ${{ secrets.SECRETS_H }}
+        run: |
+          if [ -z "$CONFIG_H" ] || [ -z "$SECRETS_H" ]; then
+            echo "::error::CONFIG_H or SECRETS_H secret is not set in repo Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          printf '%s\n' "$SECRETS_H" > secrets.h
+          printf '%s\n' "$CONFIG_H"  > config.h
+          # NOTE: do NOT echo file contents — they contain credentials.
+          echo "Wrote config.h ($(wc -c < config.h) bytes) and secrets.h ($(wc -c < secrets.h) bytes)"
+
+      - name: Inject FIRMWARE_VERSION header
+        run: |
+          # Tag "v2026.05.25-01" → version string "2026.05.25-01"
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Building version: $VERSION"
+          cat > firmware_version.h <<EOF
+          #ifndef FIRMWARE_VERSION
+          #define FIRMWARE_VERSION "$VERSION"
+          #endif
+          EOF
+          echo "FIRMWARE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Compile
+        run: |
+          arduino-cli compile \
+            --fqbn "$FQBN" \
+            --output-dir build \
+            --warnings default \
+            .
+          ls -la build/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/Dashboard.ino.bin
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+      - name: Update version.txt on firmware-latest branch
+        run: |
+          git config user.name  "Lars Wittrock"
+          git config user.email "93624822+lwittrock@users.noreply.github.com"
+
+          BIN_URL="https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/Dashboard.ino.bin"
+
+          # firmware-latest must exist as an orphan branch before first run
+          # (see docs/ota-updates-plan.md for the one-time setup).
+          git fetch origin firmware-latest
+          git switch firmware-latest
+
+          printf '%s\n%s\n' "$FIRMWARE_VERSION" "$BIN_URL" > version.txt
+          git add version.txt
+          git commit -m "Release ${FIRMWARE_VERSION}"
+          git push origin firmware-latest

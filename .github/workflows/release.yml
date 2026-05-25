@@ -27,9 +27,12 @@ jobs:
       #   arduino-cli core search inkplate --additional-urls $BOARDS_URL
       CORE_ID: Inkplate_Boards:esp32
 
-      # FQBN (Fully Qualified Board Name) for Inkplate6. Find via:
-      #   arduino-cli board listall --additional-urls $BOARDS_URL | grep -i inkplate
-      FQBN: Inkplate_Boards:esp32:Inkplate6
+      # FQBN (Fully Qualified Board Name) for Inkplate6.
+      # CRITICAL: must be Inkplate6V2, NOT Inkplate6. See CLAUDE.md note.
+      # The legacy "Inkplate6" FQBN has build.board=ESP32_DEV which fails
+      # to define ARDUINO_INKPLATE6 — the macro the v11+ library needs.
+      # "Soldered Inkplate6" in the IDE picker = Inkplate6V2 internally.
+      FQBN: Inkplate_Boards:esp32:Inkplate6V2
 
       # Pinned versions — reproducible builds. Update only deliberately.
       # Verified against local Arduino IDE on 2026-05-25.
@@ -122,8 +125,10 @@ jobs:
 
           # firmware-latest must exist as an orphan branch before first run
           # (see docs/ota-updates-plan.md for the one-time setup).
-          git fetch origin firmware-latest
-          git switch firmware-latest
+          # Explicit refspec because actions/checkout@v4 shallow-clones only the tag.
+          git fetch origin firmware-latest:firmware-latest
+          # --force to ignore the untracked build artifacts in the runner workspace.
+          git switch --force firmware-latest
 
           printf '%s\n%s\n' "$FIRMWARE_VERSION" "$BIN_URL" > version.txt
           git add version.txt

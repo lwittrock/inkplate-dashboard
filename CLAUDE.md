@@ -202,6 +202,12 @@ These were discovered during integration spikes and are not derivable from the c
 - `winddirectiondegrees` is exposed directly as an integer (0–360). `winddirection` (Dutch cardinal string) is only used as fallback.
 - `feeltemperature` is lowercase (not `feelTemperature`). Not used by the dashboard.
 
+**CI / arduino-cli build gotchas:**
+- **FQBN for Inkplate6 is `Inkplate6V2`, NOT `Inkplate6`.** The Soldered "Inkplate_Boards:esp32" package contains both. The legacy `Inkplate6` entry has `build.board=ESP32_DEV` which fails to define the `ARDUINO_INKPLATE6` macro that the v11+ Inkplate library's `driverSelect.h` requires — compile dies with `#error "Board not selected!"`. The IDE's "Soldered Inkplate6" picker silently selects `Inkplate6V2` (which has `build.board=INKPLATE6V2` → defines `ARDUINO_INKPLATE6V2`). Lost ~1 hour to this in Phase 1.
+- **arduino-cli requires the sketch folder name to match the main `.ino` filename.** Repo checks out as `inkplate-dashboard/` but the main file is `Dashboard.ino`. CI workaround: copy sketch files into `sketch/Dashboard/` before invoking `arduino-cli compile`.
+- **`config.h` and `secrets.h` are gitignored, but CI must own them as the source of truth.** Both are stored as whole-file Actions secrets (`CONFIG_H`, `SECRETS_H`) and written to disk in a workflow step before compile. Never reinterpret semantics of an existing `config.h` field without renaming — see "boot-path discipline" above for why.
+- **`FIRMWARE_VERSION` is injected via a CI-generated `firmware_version.h`** (also gitignored). Local builds use the `"dev"` fallback in `Dashboard.ino`. Don't reference `FIRMWARE_VERSION` from code paths that must run on first-ever boot before the OTA framework lands — guard with `#ifdef` if in doubt.
+
 **Battery optimizations consciously skipped:**
 - TLS cert pinning — small power win, big code/maintenance cost. Defer until `setInsecure()` stops working (which it isn't).
 - CPU clock below 80 MHz — causes WiFi instability.

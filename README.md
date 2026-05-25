@@ -6,6 +6,21 @@ Personal hobby project, sharing in case it's useful as a reference. Not actively
 
 ---
 
+## What's on the screen
+
+Editorial newspaper-style layout, top to bottom:
+
+- **Masthead** — greeting ("Goedemorgen, Lars"), today's date, and a sun/moon arc with a filled dot marking the current position between sunrise and sunset.
+- **Current weather** — a 128 px weather icon, the temperature in a 48 pt hero number with a degree ring, and a wind indicator (km/h + cardinal direction + arrow).
+- **Right of weather** — either a **2-hour rain chart** with a Bayer-dithered fill (when Buienradar nowcast shows rain incoming), or a **24-hour temperature curve** with sunrise/sunset guides (when the next two hours are dry).
+- **Week strip** — 7 cells, each showing day name, a 48 px forecast icon, and a min/max temperature range bar.
+- **Departures** — 3 train cards for Den Haag → Tilburg Universiteit, each with departure time, track number, transfer status at Breda, arrival time at the destination, and a CTR/HS pill marking which Den Haag station it leaves from. The picker substitutes a Den Haag HS train when a Centraal slot is cancelled or badly delayed.
+- **Footer** — last-updated time and a battery icon.
+
+Renders in pure 1-bit black and white. A full refresh happens once an hour to clear ghosting; partial refreshes the rest of the time.
+
+---
+
 ## Hardware
 
 - **[Inkplate 6](https://inkplate.io/)** — ESP32-based, 800×600 1-bit e-ink display (Soldered Electronics)

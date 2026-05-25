@@ -931,11 +931,17 @@ void drawTrains(const Departure d[], int n) {
 }
 
 void drawFooter() {
-  // Left side: "Updated HH:MM" from current local time
+  // Left side: "Updated HH:MM" from current local time, plus optional
+  // firmware version (SHOW_VERSION_FOOTER in config.h) for OTA shakedown.
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    char buf[24];
+    char buf[48];
+#ifdef SHOW_VERSION_FOOTER
+    sprintf(buf, "Updated %02d:%02d  ·  %s",
+            timeinfo.tm_hour, timeinfo.tm_min, FIRMWARE_VERSION);
+#else
     sprintf(buf, "Updated %02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+#endif
     display.setFont(&Inter_Regular9pt7b);
     display.setCursor(MARGIN_LEFT, FOOTER_Y);
     display.print(buf);

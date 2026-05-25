@@ -193,18 +193,31 @@ Confirmed:
 
 **Risk:** zero — `performUpdate` is a no-op.
 
-### Phase 3 — Real OTA with app-level rollback
+### Phase 3 — Real OTA with app-level rollback — ✅ IMPLEMENTED 2026-05-25 (deployment + testing pending)
 
 **Goal:** actual self-update working, with the rollback safety net.
 
-1. Replace `performUpdate` stub with real `httpUpdate.update()`.
-2. Add `checkBootAttempts()` at the very top of `setup()` (after btStop, before WAKE check).
-3. Add `markFirmwareValid()` at the end of `setup()`, after `updateDisplay()` returns.
-4. Tag a release with a deliberately tiny visible change (e.g. version string in the footer).
-5. Wait for the morning check, watch device pull it.
-6. **Test rollback:** publish a release whose `setup()` immediately calls `esp_restart()` after `checkBootAttempts()`. Confirm device reverts to previous version after 3 boots (~few seconds, since each "boot" is fast when it crashes early).
+**What landed:**
+- `performUpdate(version, url)` — calls `httpUpdate.update()` with `HTTPC_FORCE_FOLLOW_REDIRECTS` (GitHub release URL 302s to `objects.githubusercontent.com`). Stages `otaPendingVersion` before the download so rollback detection can identify in-flight OTAs.
+- `checkBootAttempts()` — runs at the top of `setup()` (after `initOtaState()`, before `initHardware()`). Increments counter; if it hits `OTA_BOOT_FAILURE_LIMIT` (3) AND `pendingVersion` is set, calls `esp_ota_set_boot_partition()` on the other slot and `esp_restart()`. App-level rollback, not bootloader-level.
+- `markFirmwareValid()` — runs **right after `initHardware()`**, NOT at end of `setup()`. The original "end of setup" plan would have broken catastrophically because `handleNightMode()` calls `goToSleep()` without returning during 23:00–07:00. Every night-time wake would have incremented `bootAttempts` without resetting it → false rollback within ~45 minutes. New rule: if WiFi+NTP came up, firmware is healthy enough to mark valid.
+- "Dev build" special case: a local firmware compiled without CI's `firmware_version.h` shows `FIRMWARE_VERSION="dev"`, which lexically sorts > any digit-starting version. Without an exception, dev builds could never OTA-pull a tagged release. Fix: if local version is literally `"dev"`, any tagged remote is treated as newer.
+- Footer version display gated by `SHOW_VERSION_FOOTER` in `config.h` — appears as `Updated HH:MM  ·  2026.MM.DD-NN` next to the timestamp. Flip the define off once trusted.
 
-**Risk:** medium. A bad build that boots-but-misbehaves (renders wrong content but doesn't crash) bypasses rollback. Only defense is local USB test before tagging.
+**Failure modes covered:**
+- ✅ New firmware crashes early in `setup()` → bootAttempts climbs, rollback fires after 3 boots.
+- ✅ New firmware boot loops → same as above.
+- ✅ Cold boot (battery removal) doesn't trigger spurious rollback — RTC magic sentinel resets state cleanly.
+- ❌ New firmware boots, `initHardware()` returns OK, but later code renders wrong content — markFirmwareValid already fired. No automatic mitigation. Defense: tag discipline + local USB test before tagging.
+
+**Deployment + testing checklist (pending):**
+1. User pulls Phase 3 code, re-uploads via Arduino IDE on `min_spiffs` partition (still `FW: dev` locally).
+2. On next wake, device fetches manifest, sees v05 tagged release, calls `performUpdate` (dev → tagged is always treated as upgrade).
+3. Device reboots into the new slot, runs v05 firmware, hits `markFirmwareValid()` after initHardware — logs `marked valid after update to 2026.05.25-05`.
+4. Footer should now read `Updated HH:MM  ·  2026.05.25-05`.
+5. **Test rollback** (optional but recommended): tag a deliberately-broken release whose `setup()` calls `esp_restart()` right after `checkBootAttempts()`. Device pulls it, boots 3 times in rapid succession, rolls back to v05.
+
+**Risk on deployment:** medium. Mitigated by: app-level rollback for crashes; `lastFailedVersion` to skip known-bad versions; tag discipline.
 
 ---
 

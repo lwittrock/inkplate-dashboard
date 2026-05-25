@@ -168,10 +168,17 @@ void setup() {
   display.begin();
   DBGLN("Display initialized");
 
-  initOtaState();   // reset OTA RTC state if cold boot (sentinel mismatch)
+  initOtaState();      // reset OTA RTC state if cold boot (sentinel mismatch)
+  checkBootAttempts(); // may rollback + restart if pending OTA failed too often
 
   initHardware();
   DBGLN("Hardware initialized");
+
+  // Reaching here means WiFi + NTP came up — firmware is healthy.
+  // Mark valid BEFORE night-mode check, because handleNightMode() can
+  // goToSleep() without returning and would otherwise let bootAttempts
+  // climb unbounded across one night.
+  markFirmwareValid();
 
   handleNightMode();
   DBGLN("Night mode check passed");

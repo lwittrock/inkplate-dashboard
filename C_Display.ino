@@ -890,6 +890,11 @@ void drawTrains(const Departure d[], int n) {
     display.print(dep.track);
 
     // --- Transfer line ---
+    // Skip the whole "→ Uni HH:MM" row when this trip is cancelled — the
+    // top-of-card "cancelled" label already covers it, and printing an
+    // arrival time for a trip that isn't running is nonsense.
+    if (dep.cancelled) continue;
+
     bool tCancelled = (dep.transfer == TRANSFER_CANCELLED);
     bool tLate      = (dep.transfer == TRANSFER_LATE);
 

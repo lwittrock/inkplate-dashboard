@@ -1,2 +1,2 @@
-placeholder
-no-binary-yet
+2026.05.25-03
+https://github.com/lwittrock/inkplate-dashboard/releases/download/v2026.05.25-03/Dashboard.ino.bin

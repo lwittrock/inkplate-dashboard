@@ -20,8 +20,14 @@ const float LONGITUDE = 4.3007;
 // ============================================================================
 
 const unsigned long SLEEP_DURATION = 15 * 60;  // seconds
-const int NIGHT_START = 23;  // 24-hour format
-const int NIGHT_END = 7;     // 24-hour format
+
+// Night mode: device skips fetches/render between these times.
+// Minutes since midnight (so 23 * 60 + 30 = 1410 means 23:30).
+// Renamed from NIGHT_START/NIGHT_END (hours) in 2026-05; the rename
+// is deliberate so a stale config can't silently misinterpret hours
+// as minutes. See CLAUDE.md "boot-path discipline".
+const int NIGHT_START_MIN = 23 * 60 + 30;  // 23:30
+const int NIGHT_END_MIN   = 6  * 60 + 30;  // 06:30
 
 // ============================================================================
 // TRAIN CONFIGURATION

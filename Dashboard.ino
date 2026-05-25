@@ -180,6 +180,12 @@ void setup() {
   // climb unbounded across one night.
   markFirmwareValid();
 
+  // OTA manifest check — placed BEFORE handleNightMode() so it can fire
+  // during the night (first wake after midnight triggers it). Lets the
+  // device update while the user is asleep; new firmware has ~7 hours
+  // to soak before the dashboard wakes for the morning.
+  checkForUpdates();
+
   handleNightMode();
   DBGLN("Night mode check passed");
 
@@ -196,10 +202,6 @@ void setup() {
   int rainCount = 0;
   bool forecastOk = fetchOpenMeteo(extras, weekForecast, forecastCount);
   DBG("Forecast: "); DBGLN(forecastOk ? "OK" : "FAIL");
-
-  // OTA manifest check — opportunistic, piggy-backs on the active WiFi
-  // session from the forecast fetch. Log-only in Phase 2.
-  checkForUpdates();
 
   // Buienradar — current conditions. Live KNMI station observations.
   DBGLN("Fetching Buienradar (now)...");

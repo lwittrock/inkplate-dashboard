@@ -114,8 +114,10 @@ static void performUpdate(const char* version, const char* url) {
 }
 
 // Returns true if we should fetch the manifest this wake.
-// Gated by: NTP synced, hour >= NIGHT_END, lastCheckDay != today.
+// Gated by: NTP synced, lastCheckDay != today.
 // Bypassed entirely if OTA_TEST_FORCE_CHECK is defined.
+// Called BEFORE handleNightMode() in setup(), so night wakes count too —
+// new day rolls over at midnight, so first wake after 00:00 triggers OTA.
 static bool shouldCheckForUpdate() {
   time_t now = time(nullptr);
   if (now < 1700000000) {
@@ -130,10 +132,6 @@ static bool shouldCheckForUpdate() {
 
   struct tm tm_local;
   localtime_r(&now, &tm_local);
-  if (tm_local.tm_hour < NIGHT_END) {
-    return false;  // before morning, defer
-  }
-
   uint16_t today = (uint16_t)tm_local.tm_yday;
   if (today == otaLastCheckDay) {
     return false;  // already checked today

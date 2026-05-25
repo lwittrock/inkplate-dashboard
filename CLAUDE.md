@@ -28,7 +28,7 @@ C_Display.ino        — All rendering: fonts, icons, drawing helpers, sections
 ```
 setup()
   ├─ initHardware()           WiFi connect + NTP sync (POSIX TZ)
-  ├─ handleNightMode()        deep sleep if 23:00–07:00
+  ├─ handleNightMode()        deep sleep if 23:30–06:30
   ├─ fetchOpenMeteo()         24h hourly temps + 7-day daily forecast
   ├─ fetchBuienradarNow()     live KNMI station: temp, weather code, wind
   ├─ fetchBuienradarRain()    2h rain nowcast (24 × 5-min mm/h samples)
@@ -56,7 +56,7 @@ Key settings:
 | `LATITUDE` / `LONGITUDE` | Location for Open-Meteo |
 | `TIMEZONE` | POSIX TZ string (NOT IANA — see TZ note below) |
 | `SLEEP_DURATION` | Seconds between updates (default 900) |
-| `NIGHT_START` / `NIGHT_END` | Hours for night mode (default 23–7) |
+| `NIGHT_START_MIN` / `NIGHT_END_MIN` | Minutes since midnight for night mode (default 23:30–06:30) |
 | `STATION_CODE_CENTRAL` / `STATION_CODE_HS` / `STATION_CODE_DESTINATION` | NS station codes |
 | `DEBUG_LOG` | Optional `#define DEBUG_LOG 1` — enables Serial output at 115200 baud |
 | `WIFI_STATIC_IP` / `WIFI_GATEWAY` / `WIFI_SUBNET` / `WIFI_DNS` | Optional static IP (saves ~1–2 s DHCP per wake) |
@@ -212,7 +212,8 @@ These were discovered during integration spikes and are not derivable from the c
 - **Once OTA is live, CI's `CONFIG_H` secret IS the device's config.** Editing local `config.h` and closing the IDE without uploading does nothing — the device only runs CI-built binaries. To change any production config (`SHOW_VERSION_FOOTER`, `OTA_TEST_FORCE_CHECK`, station codes, anything): update the `CONFIG_H` Actions secret, then tag a new release. The local file is only relevant when USB-flashing.
 - **Secret-before-tag sequencing matters.** GitHub Actions binds secret values at step start time. If you tag a release with the intent that the new build picks up an updated secret, update the secret FIRST, then push the tag. Tagging before the secret update gives you a build with stale config.
 - **RTC RAM does NOT survive OTA-induced reboot on this hardware.** Despite ESP-IDF docs claiming `RTC_DATA_ATTR` survives `esp_restart()`, the OTA path (`httpUpdate.update()` → SW_CPU_RESET) clears RTC slow memory on the Inkplate6V2. Observed: `wakeCounter` resets to 0, `otaRtcMagic` mismatches → `initOtaState()` resets everything including `otaPendingVersion`. **Practical impact:** the rollback-after-OTA-failure path is partially broken — if a new firmware crashes on its very first boot before reaching `markFirmwareValid()`, the lost `pendingVersion` means subsequent boot-failure detection can't identify which version to roll back from. Mitigation candidates if this ever bites: `RTC_NOINIT_ATTR` (untested), NVS-backed persistence (slower but bulletproof), or accept the limitation since hand-rolled USB recovery is always available.
-- **`markFirmwareValid()` must run AFTER `initHardware()` but BEFORE `handleNightMode()`.** The original "end of setup()" plan was broken: `handleNightMode()` calls `goToSleep()` and never returns during 23:00–07:00, so during the 8-hour night every 15-min wake would increment `bootAttempts` without resetting → false rollback within ~45 minutes. Rule: "if WiFi+NTP came up, firmware is healthy enough to commit to."
+- **`markFirmwareValid()` must run AFTER `initHardware()` but BEFORE `handleNightMode()`.** The original "end of setup()" plan was broken: `handleNightMode()` calls `goToSleep()` and never returns during 23:30–06:30, so during the night every 15-min wake would increment `bootAttempts` without resetting → false rollback within ~45 minutes. Rule: "if WiFi+NTP came up, firmware is healthy enough to commit to."
+- **`checkForUpdates()` runs BEFORE `handleNightMode()`** so OTA can fire on night wakes (first wake after midnight triggers it). New firmware then has ~6 hours to soak before the dashboard wakes for the morning — if it rolls back, the user never sees the crash cycle.
 - **"dev" lexical compare exception is required for local-build → OTA upgrade path.** `FIRMWARE_VERSION="dev"` lexically sorts > all digit-starting versions because `'d'` > `'2'` in ASCII. Without an explicit `localIsDev` exception in `checkForUpdates()`, a freshly USB-flashed local build can never OTA-pull a tagged release. Don't remove the exception.
 - **GitHub release asset URLs 302-redirect** from `github.com/.../releases/download/...` to `objects.githubusercontent.com`. `httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS)` is required. Without it the download returns 0 bytes silently.
 - **Serial output between USB upload and serial monitor reconnect is lost.** The boot banner and `Wake #` from the very first boot after `arduino-cli upload` are typically missed because Arduino IDE closes the serial port for upload and the user reopens it after the hard reset. Don't conclude "the firmware didn't reboot" just because you didn't see those lines.

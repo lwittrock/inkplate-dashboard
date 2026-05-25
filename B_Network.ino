@@ -67,15 +67,17 @@ void initHardware() {
 void handleNightMode() {
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    int hour = timeinfo.tm_hour;
-    if (hour >= NIGHT_START || hour < NIGHT_END) {
-      int sleepHours = (hour >= NIGHT_START) ?
-                       (24 - hour + NIGHT_END) : (NIGHT_END - hour);
-      DBGLN("Entering Night Mode...");
+    int nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    bool inNight = (nowMin >= NIGHT_START_MIN || nowMin < NIGHT_END_MIN);
+    if (inNight) {
+      int sleepMin = (nowMin >= NIGHT_START_MIN)
+                     ? ((24 * 60 - nowMin) + NIGHT_END_MIN)  // overnight
+                     : (NIGHT_END_MIN - nowMin);             // early morning
+      DBG("Entering Night Mode... sleep "); DBG(sleepMin); DBGLN(" min");
 
       WiFi.disconnect(true);
       WiFi.mode(WIFI_OFF);
-      esp_sleep_enable_timer_wakeup(sleepHours * 3600 * 1000000ULL);
+      esp_sleep_enable_timer_wakeup((uint64_t)sleepMin * 60 * 1000000ULL);
       esp_deep_sleep_start();
     }
   }

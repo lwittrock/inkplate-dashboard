@@ -931,30 +931,23 @@ void drawTrains(const Departure d[], int n) {
 }
 
 void drawFooter() {
-  // Left side: "Updated HH:MM" from current local time, plus optional
-  // firmware version (SHOW_VERSION_FOOTER in config.h) for OTA shakedown.
+  // Left side: "Updated HH:MM" from current local time
   struct tm timeinfo;
   if (getLocalTime(&timeinfo)) {
-    char buf[48];
-#ifdef SHOW_VERSION_FOOTER
-    sprintf(buf, "Updated %02d:%02d  ·  %s",
-            timeinfo.tm_hour, timeinfo.tm_min, FIRMWARE_VERSION);
-#else
+    char buf[24];
     sprintf(buf, "Updated %02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-#endif
     display.setFont(&Inter_Regular9pt7b);
     display.setCursor(MARGIN_LEFT, FOOTER_Y);
     display.print(buf);
     display.setFont();
   }
 
-  // Right side: battery icon only (no percentage text)
+  // Right side: battery icon, right-aligned to MARGIN_RIGHT.
   float batteryV = display.readBattery();
   int pct = (batteryV > 0)
     ? constrain((int)((batteryV - 3.5f) / (4.2f - 3.5f) * 100.0f), 0, 100)
     : -1;  // -1 = no reading (USB power / no battery)
 
-  // Battery icon: body 28×14px + 3px nub on right, right-aligned to MARGIN_RIGHT
   const int iconRight = MARGIN_RIGHT;
   const int iconTop   = FOOTER_Y - 13;
   const int bodyW = 28, bodyH = 14;
@@ -967,6 +960,18 @@ void drawFooter() {
     int fillW = (int)((pct / 100.0f) * (bodyW - 4));
     display.fillRect(bodyX + 2, iconTop + 2, fillW, bodyH - 4, BLACK);
   }
+
+#ifdef SHOW_VERSION_FOOTER
+  // Firmware version, right-aligned just to the left of the battery icon.
+  // Useful during OTA shakedown; flip SHOW_VERSION_FOOTER off when trusted.
+  display.setFont(&Inter_Regular9pt7b);
+  int16_t bx, by; uint16_t bw, bh;
+  display.getTextBounds(FIRMWARE_VERSION, 0, 0, &bx, &by, &bw, &bh);
+  const int versionGap = 12;  // px between version text and battery body
+  display.setCursor(bodyX - versionGap - (int)bw, FOOTER_Y);
+  display.print(FIRMWARE_VERSION);
+  display.setFont();
+#endif
 }
 
 // ============================================================================

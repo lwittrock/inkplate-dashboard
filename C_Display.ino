@@ -223,7 +223,6 @@ void showError(const char* msg) {
   display.setCursor(150, 300);
   display.print("Error: ");
   display.print(msg);
-  display.setFont();
   display.display();
 }
 
@@ -238,25 +237,71 @@ static int hhmmToMinutes(const char* hhmm) {
        + (hhmm[3] - '0') * 10  + (hhmm[4] - '0');
 }
 
-// Masthead per redesign-plan.md "Masthead (y=0–92)".
-//   Left:  greeting (40, 48) Inter_Regular18pt7b; date (40, 72) Inter_Regular12pt7b
+// Editorial-headline greeting. Date specials take priority over weather;
+// when neither fires (which is most days) we fall back to time-of-day so
+// the masthead still differs morning vs afternoon. Output is one short
+// line of ≤ ~28 chars to fit the 18pt slot.
+static const char* makeGreeting(struct tm &timeinfo,
+                                WeatherCategory cat, bool weatherOk) {
+  static char buf[40];
+
+  // Date specials (tm_mon is 0-indexed). Add/remove freely; first hit wins.
+  struct { int mon; int mday; const char* text; } specials[] = {
+    {  0,  1, "New year." },
+    {  2, 20, "First day of spring." },
+    {  3, 27, "Koningsdag." },          // King's Day (NL)
+    {  4,  5, "Liberation Day." },
+    {  5, 21, "Midsummer." },
+    {  8, 22, "First day of autumn." },
+    { 11, 21, "Midwinter." },
+    { 11, 25, "Christmas." },
+    { 11, 26, "Boxing Day." },
+    { 11, 31, "Year's end." },
+  };
+  for (auto& s : specials) {
+    if (timeinfo.tm_mon == s.mon && timeinfo.tm_mday == s.mday) return s.text;
+  }
+
+  static const char* days[] = {
+    "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
+  };
+
+  // No weather signal yet → just the day name.
+  if (!weatherOk) {
+    snprintf(buf, sizeof(buf), "%s.", days[timeinfo.tm_wday]);
+    return buf;
+  }
+
+  const char* adj;
+  switch (cat) {
+    case CLEAR:         adj = "Bright";  break;
+    case PARTLY_CLOUDY: adj = "Mild";    break;
+    case OVERCAST:      adj = "Grey";    break;
+    case FOG:           adj = "Foggy";   break;
+    case DRIZZLE:       adj = "Drizzly"; break;
+    case RAIN:          adj = "Rainy";   break;
+    case RAIN_HEAVY:    adj = "Wet";     break;
+    case SNOW:          adj = "Snowy";   break;
+    case THUNDERSTORM:  adj = "Stormy";  break;
+    default:            adj = "Quiet";   break;
+  }
+  snprintf(buf, sizeof(buf), "%s %s.", adj, days[timeinfo.tm_wday]);
+  return buf;
+}
+
+// Masthead band (y=0–92).
+//   Left:  greeting (40, 48) Inter_Bold18pt7b; date (40, 72) Inter_Regular9pt7b
 //   Right: sun arc + dot over a dashed horizon at y=58, sunrise/sunset times
 //          centered below. Night branch swaps the arc for a moon glyph.
 void drawHeader(struct tm &timeinfo, DayForecast forecast[], int forecastCount,
-                bool forecastOk, bool isNight) {
+                bool forecastOk, bool isNight,
+                WeatherCategory currentCategory, bool weatherOk) {
 
   // --- Greeting ---
-  const char* greeting;
-  int h = timeinfo.tm_hour;
-  if (isNight)        greeting = "Good evening";
-  else if (h < 12)    greeting = "Good morning";
-  else if (h < 18)    greeting = "Good afternoon";
-  else                greeting = "Good evening";
-
   display.setFont(&Inter_Bold18pt7b);
   display.setTextColor(BLACK);
   display.setCursor(40, 48);
-  display.print(greeting);
+  display.print(makeGreeting(timeinfo, currentCategory, weatherOk));
 
   // --- Date "Sun · 24 May 2026" ---
   // The middot glyph isn't in our ASCII-only font header, so draw a small
@@ -951,7 +996,8 @@ void updateDisplay(
 
   // Header
   if (hasTime) {
-    drawHeader(timeinfo, forecast, forecastCount, forecastOk, isNight);
+    drawHeader(timeinfo, forecast, forecastCount, forecastOk, isNight,
+               currentCategory, weatherOk);
   }
 
   // Section 1: Current Weather (left) + rotating right panel

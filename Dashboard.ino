@@ -100,6 +100,13 @@ Inkplate display(INKPLATE_1BIT);
 // Counter is 0 on cold boot — the cold boot then renders a full refresh.
 RTC_DATA_ATTR uint32_t wakeCounter = 0;
 
+// Last successful NTP sync (epoch seconds). The ESP32 RTC keeps running
+// across deep sleep and drifts < 1 s/day, so HH:MM stays correct without
+// resyncing on every 15-min wake. initHardware() only triggers a new SNTP
+// when this is older than NTP_RESYNC_MIN, saving ~2–4 s of radio-on time
+// on the 3 of 4 wakes that don't need it.
+RTC_DATA_ATTR time_t lastNtpSync = 0;
+
 // Last-known-good Buienradar values, persisted across deep sleep. If a
 // fetch fails on a given wake we render from cache rather than going back
 // to Open-Meteo or showing an empty section. nowValid / rainValid are
@@ -123,6 +130,11 @@ RTC_DATA_ATTR BuienradarCache brCache = {};
 // With SLEEP_DURATION=900 (15 min), 4 = once per hour.
 #ifndef FULL_REFRESH_EVERY
 #define FULL_REFRESH_EVERY 4
+#endif
+
+// Minutes between blocking NTP resyncs. See config.h.example for details.
+#ifndef NTP_RESYNC_MIN
+#define NTP_RESYNC_MIN 60
 #endif
 
 // ============================================================================

@@ -41,6 +41,13 @@ const char* STATION_CODE_DESTINATION = "TBU";  // Tilburg Universiteit
 
 const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ string
 
+// Minutes between blocking NTP resyncs. The ESP32 RTC keeps running across
+// deep sleep and drifts < 1 s/day, so wakes within this window just restore
+// the POSIX TZ instead of starting a fresh SNTP query. Default 60 minutes
+// covers ~3 of every 4 wakes at SLEEP_DURATION=900 and is more than enough
+// accuracy for a HH:MM display.
+#define NTP_RESYNC_MIN 60
+
 // ============================================================================
 // BUIENRADAR (live KNMI observations — for current weather + 2h rain)
 // ============================================================================

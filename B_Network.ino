@@ -35,15 +35,32 @@ void initHardware() {
     goToSleep(600);
   }
 
-  // Use POSIX TZ string so the ESP32 handles DST automatically.
-  // Note: configTime(0,0,...) would overwrite TZ with "GMT0"; configTzTime
-  // sets the POSIX zone *after* SNTP setup, so DST is honored.
-  configTzTime(TIMEZONE, "pool.ntp.org");
-  struct tm timeinfo;
-  attempts = 0;
-  while (!getLocalTime(&timeinfo) && attempts < 30) {
-    delay(500);
-    attempts++;
+  // Time setup. The RTC keeps running across deep sleep and only drifts
+  // < 1 s/day, so we don't need a fresh SNTP query on every wake. On cold
+  // boot or once NTP_RESYNC_MIN minutes have passed, do the blocking sync;
+  // otherwise just restore the POSIX TZ (env var is wiped each boot) so
+  // localtime() formats HH:MM correctly. Saves ~2–4 s of radio time on
+  // the wakes that skip SNTP.
+  bool needSync = (lastNtpSync == 0) ||
+                  ((time(nullptr) - lastNtpSync) > (long)NTP_RESYNC_MIN * 60);
+
+  if (needSync) {
+    configTzTime(TIMEZONE, "pool.ntp.org");
+    struct tm timeinfo;
+    attempts = 0;
+    while (!getLocalTime(&timeinfo) && attempts < 30) {
+      delay(500);
+      attempts++;
+    }
+    if (getLocalTime(&timeinfo)) {
+      lastNtpSync = time(nullptr);
+      DBGLN("NTP: synced");
+    }
+  } else {
+    setenv("TZ", TIMEZONE, 1);
+    tzset();
+    DBG("NTP: skipped (last sync "); DBG(time(nullptr) - lastNtpSync);
+    DBGLN("s ago)");
   }
 }
 

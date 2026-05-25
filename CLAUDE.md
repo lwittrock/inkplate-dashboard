@@ -8,7 +8,7 @@ E-paper weather + train dashboard running on an **Inkplate 6** (ESP32-based, 800
 **Origin stations:** Den Haag Centraal (GVC) and Den Haag HS (GV)
 **Destination:** Tilburg Universiteit (TBU) — both origins queried via NS Trip Planner v3, a per-slot picker substitutes HS trips when a Centraal slot is disrupted.
 
-**Design source of truth:** [design/mockup.html](design/mockup.html) — open in a browser at native 800×600 to see the editorial layout. The redesign rationale and per-section spec live in [docs/redesign-plan.md](docs/redesign-plan.md).
+**Design source of truth:** [design/mockup.html](design/mockup.html) — open in a browser at native 800×600 to see the editorial layout. Every Y coordinate in `C_Display.ino` is copied pixel-accurate from the mockup; cross-check before moving anything.
 
 ---
 
@@ -77,7 +77,9 @@ All HTTP calls use `WiFiClientSecure` with `client.setInsecure()` (no certificat
 
 **Parse pattern: slurp before parse.** Every HTTPS JSON call (Open-Meteo, Buienradar, Trip Planner) reads the full body into a `String` first and then `deserializeJson(...)`. Streaming straight from `getStream()` over `WiFiClientSecure` intermittently returns `IncompleteInput` when the TLS buffer drains mid-parse — proven on every endpoint that's been tried. The Trip Planner call keeps memory bounded by pairing slurp with `DeserializationOption::Filter` so only the fields the picker actually reads land in the JsonDoc.
 
-**Buienradar mapping & fallback:** the alphabetic iconcode (e.g. `a` = sunny, `j` = clear with high cirrus, `p` = overcast) is translated to the dashboard's `WeatherCategory` enum in `categorizeBuienradarIcon()` and then round-tripped through a synthetic WMO integer so downstream code is unchanged. On any Buienradar fetch failure, the dashboard restores the last successful values from `RTC_DATA_ATTR brCache` (separate `nowValid` / `rainValid` flags) rather than falling back to Open-Meteo. Cold boot with a failed first fetch shows the existing "Weather data unavailable" branch and self-heals next wake.
+**Buienradar mapping & fallback:** the alphabetic iconcode (e.g. `a` = sunny, `j` = clear with high cirrus, `p` = overcast) is translated directly to the dashboard's `WeatherCategory` enum in `categorizeBuienradarIcon()` and flows through the rest of the pipeline as that enum — no synthetic-WMO round-trip (that intermediate hop was removed once Open-Meteo stopped being a current-conditions source). On any Buienradar fetch failure, the dashboard restores the last successful values from `RTC_DATA_ATTR brCache` (separate `nowValid` / `rainValid` flags) rather than falling back to Open-Meteo. Cold boot with a failed first fetch shows the existing "Weather data unavailable" branch and self-heals next wake.
+
+**Buienradar consensus picker (TO REVISIT):** `fetchBuienradarNow` does **not** just take the single nearest station — that strategy was brittle to single-sensor outliers (observed 2026-05-25: Voorschoten at 9 km reported OVERCAST while Rotterdam, Hoek van Holland, Schiphol and Lopik all within 50 km reported CLEAR, and a blue-sky day rendered with a cloud icon). The current picker collects the `BUIENRADAR_MAX_CANDIDATES` nearest valid stations, votes the mode of `WeatherCategory` across those within `BUIENRADAR_CONSENSUS_KM` (default 30 km, ties broken by proximity), and then sources temp/wind/icon from the closest station that voted for the winning category. Known caveats: (1) AWS-class stations like Voorschoten and Rotterdam Geulhaven use cheaper optical sensors than the KNMI synoptic stations and probably deserve less weight, not equal weight — we currently treat them as equals; (2) mode-blending lags real frontal passages by one wake; (3) categorical ties on transitional days can flicker. Worth revisiting once a week or two of multi-station log data exists — at that point a "trust the synoptic stations, ignore AWS-only" rule may be simpler and more accurate than voting. Constants live in `config.h`; debug logs every candidate when `DEBUG_LOG` is on.
 
 ---
 
@@ -97,7 +99,7 @@ y=474  │ DEPARTURES · TO BREDA — 3 cards × 220 px (CTR or HS pill)   │
 y=590  └─ FOOTER: updated HH:MM + battery icon ──────────────────────┘
 ```
 
-All Y coordinates are absolute (pixel-accurate to `design/mockup.html`). See [docs/redesign-plan.md](docs/redesign-plan.md) for the per-section spec.
+All Y coordinates are absolute (pixel-accurate to `design/mockup.html`).
 
 ---
 
@@ -128,7 +130,7 @@ Inter (OFL) converted from TTF via [rop.nl/truetype2gfx](https://rop.nl/truetype
 
 All bitmaps are in `icons.h` stored in PROGMEM:
 - **128×128**: current-weather variants (sun, cloud_sun, cloud_moon, etc.)
-- **64×64**: forecast variants (kept for fallback)
+- **64×64**: source bitmaps that the 48×48 set is derived from. No live consumer in the firmware after the redesign — kept so the downscale script can regenerate the 48 set without re-tracing originals.
 - **48×48**: week-strip forecast variants (auto-generated by `design/downscale_icons.py`)
 
 When accessing bitmap data directly, always use `pgm_read_byte()`.
@@ -171,12 +173,36 @@ python design/downscale_icons.py
 ## Working with Claude Code
 
 - **ArduinoJson v7**: Use `JsonDocument doc;` (no size arg). Fields: `doc["key"] | default`. Arrays: `doc["arr"].as<JsonArray>()`.
-- **HTTPS JSON parsing — two patterns**:
-  - **Small payload (slurp)**: `String response = http.getString(); deserializeJson(doc, response);` — what Open-Meteo uses. Easy and reliable for ≤ ~20 KB responses.
-  - **Large payload (stream + Filter)**: `deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));` — what Trip Planner uses. The ~90 KB NS payload would push heap pressure if slurped, so we build a filter that keeps only the fields we need (`trips[].legs[].{cancelled, origin.plannedDateTime, …}`) and stream-parse. Verified working on Inkplate WiFiClientSecure with ~50 KB transient heap delta. If streaming fails on a new endpoint with `IncompleteInput`, slurp+filter is a safe fallback.
+- **HTTPS JSON parsing — slurp then parse, always.** Streaming straight from `http.getStream()` over `WiFiClientSecure` returned `IncompleteInput` intermittently on every endpoint tried (Open-Meteo, Buienradar, Trip Planner), because the TLS buffer drains mid-parse. The fix is to read the body into a `String` first, then `deserializeJson(doc, response)`. For large payloads where the parsed tree would push heap pressure (Trip Planner's ~90 KB body), keep the *parse tree* small by pairing slurp with `DeserializationOption::Filter` — only the fields the picker actually reads land in the JsonDoc. Measured Trip Planner heap delta: 153 KB free → 101 KB during fetch → 153 KB free after. Plenty of headroom.
 - **PROGMEM**: All icon arrays use `PROGMEM`. If adding new bitmaps, declare with `const uint8_t PROGMEM name[] = {...};` and access with `pgm_read_byte()`.
 - **Deep sleep — RTC RAM persists**: Every wake is a fresh `setup()` call, so heap state is lost. **But** `RTC_DATA_ATTR` variables survive deep sleep — used today for `wakeCounter`, and a good fit for any cache that should outlive the cycle (last-known-good departures, week forecast). Plain globals do NOT persist.
 - **String vs char[]**: Prefer `char buf[N]` + `sprintf` over `String` objects on the heap; the ESP32 has limited RAM and heap fragmentation is a real risk on long-running embedded systems.
 - **1-bit display**: All drawing is BLACK or WHITE only. `display.display()` causes a full e-ink refresh (~1–2 s, some flicker). Partial refresh runs in between (`FULL_REFRESH_EVERY` controls cadence).
 - **Timezone**: System time uses `configTzTime(TIMEZONE, ...)`, so `TIMEZONE` must be a **POSIX TZ string** (e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`) — ESP32 has no IANA tzdb, so `"Europe/Amsterdam"` silently falls back to UTC. Open-Meteo URLs use `timezone=auto` (derived from lat/lon) so they don't depend on `TIMEZONE`. Trip Planner ISO timestamps are parsed by `parseISOToLocal()` (treats fields as local since both device and API agree on Amsterdam TZ).
 - **Pixel-accurate layout**: The display sections use absolute Y coordinates copied from `design/mockup.html`. Cross-check the mockup before moving anything.
+
+---
+
+## Non-obvious gotchas (spike findings worth preserving)
+
+These were discovered during integration spikes and are not derivable from the code alone. Keeping them so a future change doesn't re-discover them the hard way.
+
+**NS Trip Planner v3:**
+- The existing Reisinformatie v2 API key works for v3 — no separate portal subscription needed.
+- Den Haag HS is `GV`, not `GVH`. `GVH` returns HTTP 400.
+- Every DH → TBU trip has **exactly 2 legs** (IC to Breda, SPR Breda → TBU). The single-leg branch in `fetchTrips` is defensive only.
+- Payloads are ~86 KB (GVC→TBU) and ~94 KB (GV→TBU) — slurp+Filter is needed; raw slurp into a `JsonDocument` blows heap.
+- NS returns multiple "routing options" for the same physical train (different via-station hashes → identical `plannedDepartureISO`). The picker in `A_Calculations.ino` dedups by ISO before assigning slots.
+- ISO timestamps come with offsets *without* a colon (`+0200`, not `+02:00`). Both device and API use Amsterdam local time, so `parseISOToLocal` treats the wall-clock fields as local and ignores the offset.
+
+**Buienradar feed schema:**
+- The weather icon is exposed as an *image URL* (`.../weather/30x30/aa.png`) — there is no `iconcode` field. Filename stem = code.
+- Icon codes are doubled letters for the day variant (`aa`, `bb`, `cc`) and single for the night variant (`a`, `b`). `extractBuienradarIconCode` collapses doubled letters to single before lookup. `cc` is the only multi-char code that stays distinct.
+- `winddirectiondegrees` is exposed directly as an integer (0–360). `winddirection` (Dutch cardinal string) is only used as fallback.
+- `feeltemperature` is lowercase (not `feelTemperature`). Not used by the dashboard.
+
+**Battery optimizations consciously skipped:**
+- TLS cert pinning — small power win, big code/maintenance cost. Defer until `setInsecure()` stops working (which it isn't).
+- CPU clock below 80 MHz — causes WiFi instability.
+- Region-targeted partial refresh — ghosting risk with Bayer-dithered fills is too high.
+- Sleep current optimization — ~30–40 µA is already near the floor for Inkplate 6's onboard regulators.

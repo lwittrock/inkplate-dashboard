@@ -53,6 +53,11 @@ const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ stri
 #define BUIENRADAR_RAIN_URL "https://gpsgadget.buienradar.nl/data/raintext?lat=%.2f&lon=%.2f"
 // Skip stations whose latest reading is older than this many minutes.
 #define BUIENRADAR_STALE_MIN 60
+// Consensus radius for the icon-category vote across nearby stations.
+// Stations within this distance get one vote; mode wins, ties → closest.
+// See CLAUDE.md "Buienradar consensus picker" for the rationale.
+#define BUIENRADAR_CONSENSUS_KM 30.0f
+#define BUIENRADAR_MAX_CANDIDATES 6
 
 // ============================================================================
 // OPTIONAL: DEBUG LOGGING

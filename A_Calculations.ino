@@ -78,7 +78,7 @@ WeatherCategory calculateDailyWeather(
 // run on Amsterdam time (configTzTime + timezone=auto on Open-Meteo), so
 // treating the wall-clock fields as local — without applying the +0200
 // offset — yields the correct epoch. tm_isdst=-1 lets mktime decide DST.
-static time_t parseISOToLocal(const char* iso) {
+time_t parseISOToLocal(const char* iso) {
   if (!iso || strlen(iso) < 19) return 0;
   struct tm t = {};
   t.tm_year = (iso[0]-'0')*1000 + (iso[1]-'0')*100 + (iso[2]-'0')*10 + (iso[3]-'0') - 1900;
@@ -239,61 +239,27 @@ int bearingFromDutchCardinal(const char* s) {
   return -1;
 }
 
-// Map a Buienradar single/double-letter iconcode to the existing
-// WeatherCategory enum. See docs/buienradar-integration-plan.md §B2 for the
-// derivation. Unknown codes fall through to OVERCAST.
-WeatherCategory categorizeBuienradarIcon(const char* code, bool& useSunnyVariant) {
-  useSunnyVariant = false;
+// Map a Buienradar single/double-letter iconcode to a WeatherCategory.
+// Unknown codes fall through to OVERCAST.
+WeatherCategory categorizeBuienradarIcon(const char* code) {
   if (!code || !code[0]) return OVERCAST;
-
-  // "cc" is the only multi-char code; handle it explicitly.
-  if (strcmp(code, "cc") == 0) return OVERCAST;
+  if (strcmp(code, "cc") == 0) return OVERCAST;  // only multi-char code
 
   switch (code[0]) {
-    case 'a': return CLEAR;
-    case 'j': return CLEAR;
-    case 'b': return PARTLY_CLOUDY;
-    case 'o': return PARTLY_CLOUDY;
-    case 'r': return PARTLY_CLOUDY;
-    case 'p': return OVERCAST;
-    case 'c': return OVERCAST;
-    case 'd': return FOG;
-    case 'n': return FOG;
-    case 'f': useSunnyVariant = true;  return DRIZZLE;
-    case 'k': return DRIZZLE;
-    case 'h': useSunnyVariant = true;  return RAIN;
-    case 'm': return RAIN_HEAVY;
-    case 'q': return RAIN_HEAVY;
-    case 'g': return THUNDERSTORM;
-    case 's': return THUNDERSTORM;
-    case 'l': return THUNDERSTORM;
-    case 'i': return SNOW;
-    case 'u': useSunnyVariant = true;  return SNOW;
-    case 'v': return SNOW;
-    case 'w': return SNOW;
+    case 'a': case 'j':           return CLEAR;
+    case 'b': case 'o': case 'r': return PARTLY_CLOUDY;
+    case 'p': case 'c':           return OVERCAST;
+    case 'd': case 'n':           return FOG;
+    case 'f': case 'k':           return DRIZZLE;
+    case 'h':                     return RAIN;
+    case 'm': case 'q':           return RAIN_HEAVY;
+    case 'g': case 's': case 'l': return THUNDERSTORM;
+    case 'i': case 'u':
+    case 'v': case 'w':           return SNOW;
     default:
       DBG("BR unknown iconcode: "); DBGLN(code);
       return OVERCAST;
   }
-}
-
-// Synthetic WMO code so the existing categorizeCurrentWeather(int) round-trips
-// a Buienradar-derived category back to the same enum value (option α in the
-// integration plan). Lets us inject BR data without changing every signature
-// from fetch to drawWeatherIcon128.
-int categoryToSyntheticWmo(WeatherCategory c) {
-  switch (c) {
-    case CLEAR:         return 0;
-    case PARTLY_CLOUDY: return 2;
-    case OVERCAST:      return 3;
-    case FOG:           return 45;
-    case DRIZZLE:       return 51;
-    case RAIN:          return 61;
-    case RAIN_HEAVY:    return 81;
-    case SNOW:          return 71;
-    case THUNDERSTORM:  return 95;
-  }
-  return 3;
 }
 
 // 8-bucket cardinal compass from a meteorological wind bearing (degrees from N,

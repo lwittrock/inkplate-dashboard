@@ -106,11 +106,11 @@ RTC_DATA_ATTR uint32_t wakeCounter = 0;
 // independent — a 250-byte raintext failing does not invalidate the
 // 5 current-conditions fields, and vice versa.
 struct BuienradarCache {
-  bool  nowValid;
-  float temp;
-  int   weatherCode;
-  float wind;
-  int   windBearing;
+  bool            nowValid;
+  float           temp;
+  WeatherCategory category;
+  float           wind;
+  int             windBearing;
 
   bool  rainValid;
   int   rainCount;
@@ -155,30 +155,30 @@ void setup() {
   // and 2h rain nowcast come from Buienradar — see fetchBuienradar* below.
   DBGLN("Fetching Open-Meteo (forecast only)...");
   float temp = 0, wind = 0;
-  int weatherCode = 0;
+  WeatherCategory currentCategory = OVERCAST;
   WeatherExtras extras = {};
   DayForecast weekForecast[7];
   int forecastCount = 0;
   float rainData[24];
-  char timeLabels[24][20];
+  char timeLabels[24][6];
   int rainCount = 0;
   bool forecastOk = fetchOpenMeteo(extras, weekForecast, forecastCount);
   DBG("Forecast: "); DBGLN(forecastOk ? "OK" : "FAIL");
 
   // Buienradar — current conditions. Live KNMI station observations.
   DBGLN("Fetching Buienradar (now)...");
-  bool nowFetched = fetchBuienradarNow(temp, wind, weatherCode, extras.windDirection);
+  bool nowFetched = fetchBuienradarNow(temp, wind, currentCategory, extras.windDirection);
   bool weatherOk = false;
   if (nowFetched) {
     brCache.nowValid    = true;
     brCache.temp        = temp;
-    brCache.weatherCode = weatherCode;
+    brCache.category    = currentCategory;
     brCache.wind        = wind;
     brCache.windBearing = extras.windDirection;
     weatherOk = true;
   } else if (brCache.nowValid) {
     temp                  = brCache.temp;
-    weatherCode           = brCache.weatherCode;
+    currentCategory       = brCache.category;
     wind                  = brCache.wind;
     extras.windDirection  = brCache.windBearing;
     weatherOk = true;
@@ -194,14 +194,14 @@ void setup() {
     brCache.rainCount = rainCount;
     for (int i = 0; i < rainCount && i < 24; i++) {
       brCache.rainMmh[i] = rainData[i];
-      strlcpy(brCache.rainLabels[i], timeLabels[i], 6);
+      strlcpy(brCache.rainLabels[i], timeLabels[i], sizeof(brCache.rainLabels[i]));
     }
     rainOk = true;
   } else if (brCache.rainValid) {
     rainCount = brCache.rainCount;
     for (int i = 0; i < rainCount && i < 24; i++) {
       rainData[i] = brCache.rainMmh[i];
-      strlcpy(timeLabels[i], brCache.rainLabels[i], 20);
+      strlcpy(timeLabels[i], brCache.rainLabels[i], sizeof(timeLabels[i]));
     }
     rainOk = true;
     DBGLN("BR rain: using RTC cache");
@@ -210,7 +210,7 @@ void setup() {
   if (weatherOk) {
     DBG("Now: temp="); DBG(temp);
     DBG(" wind="); DBG(wind);
-    DBG(" code="); DBGLN(weatherCode);
+    DBG(" cat="); DBGLN((int)currentCategory);
   }
 
   // Fetch train data from Central
@@ -252,7 +252,7 @@ void setup() {
 
   DBGLN("Calling updateDisplay...");
   updateDisplay(
-    temp, wind, weatherCode, weatherOk, extras,
+    temp, wind, currentCategory, weatherOk, extras,
     rainData, timeLabels, rainCount, rainOk,
     weekForecast, forecastCount, forecastOk,
     departures, departureCount

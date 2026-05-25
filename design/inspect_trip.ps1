@@ -1,4 +1,7 @@
-$j = Get-Content 'c:\AAA\python-projects\inkplate_test\Dashboard\design\trip_gvc_to_tbu.json' -Raw | ConvertFrom-Json
+# Dev helper: pretty-prints the first 2 trips from a captured Trip Planner
+# JSON so the leg/transfer shape is easy to eyeball. Pair with trip_spike.ps1.
+
+$j = Get-Content (Join-Path $PSScriptRoot 'trip_gvc_to_tbu.json') -Raw | ConvertFrom-Json
 Write-Host ('Trip count: ' + $j.trips.Count)
 for ($ti = 0; $ti -lt [Math]::Min(2, $j.trips.Count); $ti++) {
   $t = $j.trips[$ti]

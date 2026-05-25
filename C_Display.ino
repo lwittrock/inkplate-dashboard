@@ -3,7 +3,7 @@
 // ============================================================================
 // Icon rendering and screen layout
 
-// Custom fonts — Inter (see docs/redesign-plan.md "Typography").
+// Custom fonts — Inter (OFL). Conversion: rop.nl/truetype2gfx.
 #include "Fonts/Inter_Regular9pt7b.h"
 #include "Fonts/Inter_Regular12pt7b.h"
 #include "Fonts/Inter_Regular18pt7b.h"
@@ -175,66 +175,25 @@ void sunDotForT(int xLeft, int xRight, int baselineY, int rise, float t,
 }
 
 // ============================================================================
-// CURRENT WEATHER CODE CATEGORIZATION (for 128px icon)
-// ============================================================================
-
-WeatherCategory categorizeCurrentWeather(int code) {
-  // WMO: 0 = clear, 1 = mainly clear, 2 = partly cloudy, 3 = overcast.
-  // Treat "mainly clear" as clear — to a human it looks the same.
-  if (code == 0 || code == 1) return CLEAR;
-  if (code == 2) return PARTLY_CLOUDY;
-  if (code == 3) return OVERCAST;
-  if (code == 45 || code == 48) return FOG;
-  if (code >= 51 && code <= 57) return DRIZZLE;
-  if (code >= 61 && code <= 67) return RAIN;
-  if (code >= 71 && code <= 77) return SNOW;
-  if (code >= 80 && code <= 82) return RAIN_HEAVY;
-  if (code == 85 || code == 86) return SNOW;
-  if (code == 95 || code == 96 || code == 99) return THUNDERSTORM;
-  return OVERCAST;
-}
-
-// ============================================================================
 // ICON DRAWING FUNCTIONS
 // ============================================================================
 
-void drawWeatherIcon128(int x, int y, int code, bool isNight) {
+// 128×128 current-weather icon. Day/night picks moon/cloud_moon variants for
+// CLEAR / PARTLY_CLOUDY — all other categories use the same bitmap day or night.
+void drawWeatherIcon128(int x, int y, WeatherCategory category, bool isNight) {
   const uint8_t* bitmap;
-  WeatherCategory category = categorizeCurrentWeather(code);
-  
   switch (category) {
-    case CLEAR:
-      bitmap = isNight ? icon_moon_128 : icon_sun_128;
-      break;
-    case PARTLY_CLOUDY:
-      bitmap = isNight ? icon_cloud_moon_128 : icon_cloud_sun_128;
-      break;
-    case OVERCAST:
-      bitmap = icon_cloud_128;
-      break;
-    case FOG:
-      bitmap = icon_fog_128;
-      break;
-    case DRIZZLE:
-      bitmap = icon_rain_light_128;
-      break;
-    case RAIN:
-      bitmap = icon_rain_128;
-      break;
-    case RAIN_HEAVY:
-      bitmap = icon_rain_heavy_128;
-      break;
-    case SNOW:
-      bitmap = icon_snow_128;
-      break;
-    case THUNDERSTORM:
-      bitmap = icon_lightning_128;
-      break;
-    default:
-      bitmap = icon_cloud_128;
-      break;
+    case CLEAR:          bitmap = isNight ? icon_moon_128       : icon_sun_128;       break;
+    case PARTLY_CLOUDY:  bitmap = isNight ? icon_cloud_moon_128 : icon_cloud_sun_128; break;
+    case OVERCAST:       bitmap = icon_cloud_128;       break;
+    case FOG:            bitmap = icon_fog_128;         break;
+    case DRIZZLE:        bitmap = icon_rain_light_128;  break;
+    case RAIN:           bitmap = icon_rain_128;        break;
+    case RAIN_HEAVY:     bitmap = icon_rain_heavy_128;  break;
+    case SNOW:           bitmap = icon_snow_128;        break;
+    case THUNDERSTORM:   bitmap = icon_lightning_128;   break;
+    default:             bitmap = icon_cloud_128;       break;
   }
-  
   display.drawBitmap(x, y, bitmap, 128, 128, WHITE, BLACK);
 }
 
@@ -244,66 +203,18 @@ void drawWeatherIcon128(int x, int y, int code, bool isNight) {
 void drawWeatherIcon48(int x, int y, WeatherCategory category, bool useSunnyVariant) {
   const uint8_t* bitmap;
   switch (category) {
-    case CLEAR:          bitmap = icon_sun_48; break;
-    case PARTLY_CLOUDY:  bitmap = icon_cloud_sun_48; break;
-    case OVERCAST:       bitmap = icon_cloud_48; break;
-    case FOG:            bitmap = icon_fog_48; break;
+    case CLEAR:          bitmap = icon_sun_48;        break;
+    case PARTLY_CLOUDY:  bitmap = icon_cloud_sun_48;  break;
+    case OVERCAST:       bitmap = icon_cloud_48;      break;
+    case FOG:            bitmap = icon_fog_48;        break;
     case DRIZZLE:        bitmap = useSunnyVariant ? icon_sun_rain_48 : icon_rain_light_48; break;
-    case RAIN:           bitmap = useSunnyVariant ? icon_sun_rain_48 : icon_rain_48; break;
+    case RAIN:           bitmap = useSunnyVariant ? icon_sun_rain_48 : icon_rain_48;       break;
     case RAIN_HEAVY:     bitmap = useSunnyVariant ? icon_sun_rain_48 : icon_rain_heavy_48; break;
-    case SNOW:           bitmap = useSunnyVariant ? icon_sun_snow_48 : icon_snow_48; break;
-    case THUNDERSTORM:   bitmap = icon_lightning_48; break;
-    default:             bitmap = icon_cloud_48; break;
+    case SNOW:           bitmap = useSunnyVariant ? icon_sun_snow_48 : icon_snow_48;       break;
+    case THUNDERSTORM:   bitmap = icon_lightning_48;  break;
+    default:             bitmap = icon_cloud_48;      break;
   }
   display.drawBitmap(x, y, bitmap, 48, 48, WHITE, BLACK);
-}
-
-void drawWeatherIcon64(int x, int y, WeatherCategory category, bool useSunnyVariant) {
-  const uint8_t* bitmap;
-  
-  switch (category) {
-    case CLEAR:
-      bitmap = icon_sun_64;
-      break;
-      
-    case PARTLY_CLOUDY:
-      bitmap = icon_cloud_sun_64;
-      break;
-      
-    case OVERCAST:
-      bitmap = icon_cloud_64;
-      break;
-      
-    case FOG:
-      bitmap = icon_fog_64;
-      break;
-      
-    case DRIZZLE:
-      bitmap = useSunnyVariant ? icon_sun_rain_64 : icon_rain_light_64;
-      break;
-      
-    case RAIN:
-      bitmap = useSunnyVariant ? icon_sun_rain_64 : icon_rain_64;
-      break;
-      
-    case RAIN_HEAVY:
-      bitmap = useSunnyVariant ? icon_sun_rain_64 : icon_rain_heavy_64;
-      break;
-      
-    case SNOW:
-      bitmap = useSunnyVariant ? icon_sun_snow_64 : icon_snow_64;
-      break;
-      
-    case THUNDERSTORM:
-      bitmap = icon_lightning_64;
-      break;
-      
-    default:
-      bitmap = icon_cloud_64;
-      break;
-  }
-  
-  display.drawBitmap(x, y, bitmap, 64, 64, WHITE, BLACK);
 }
 
 void showError(const char* msg) {
@@ -463,10 +374,10 @@ static void drawDegreeRing(int cx, int cy, int outerR, int innerR) {
 //   Degree ring at the cap-top, right of the digits — r=9 outer, r=4 inner white
 //   Wind row y=244: rotated 22 px arrow + "%d km/h %s"
 //   Metadata y=272: "Feels %d° · Humid %d%% · UV %d" (Inter_Regular9pt7b)
-void drawCurrentWeather(float temp, int weatherCode, float wind,
+void drawCurrentWeather(float temp, WeatherCategory category, float wind,
                         int windBearing, bool isNight) {
   // --- Icon ---
-  drawWeatherIcon128(40, 125, weatherCode, isNight);
+  drawWeatherIcon128(40, 125, category, isNight);
 
   // --- Big temperature digits ---
   char tempStr[8];
@@ -663,7 +574,7 @@ void drawTempCurve(const float hourly[], int n,
 // at 5-min spacing (mm/h) with their "HH:MM" labels. Bar spacing is
 // derived from the actual sample count so the chart fills the panel
 // regardless of how many lines parsed.
-void drawRainChart(float rainData[], char timeLabels[][20], int rainCount) {
+void drawRainChart(float rainData[], char timeLabels[][6], int rainCount) {
   const int x0 = 420, x1 = 750;
   const int yTop = 140, yBot = 260;
   const int chartH = yBot - yTop;
@@ -1009,9 +920,9 @@ void drawFooter() {
 // ============================================================================
 
 void updateDisplay(
-    float temp, float wind, int currentWeatherCode, bool weatherOk,
+    float temp, float wind, WeatherCategory currentCategory, bool weatherOk,
     WeatherExtras &extras,
-    float rainData[], char timeLabels[][20], int rainCount, bool rainOk,
+    float rainData[], char timeLabels[][6], int rainCount, bool rainOk,
     DayForecast forecast[], int forecastCount, bool forecastOk,
     Departure departures[], int departureCount
   ) {
@@ -1048,7 +959,7 @@ void updateDisplay(
   drawSmallCaps(40, 112, "WEATHER");
 
   if (weatherOk && hasTime) {
-    drawCurrentWeather(temp, currentWeatherCode, wind,
+    drawCurrentWeather(temp, currentCategory, wind,
                        extras.windDirection, isNight);
   } else {
     display.setFont(&Inter_Regular12pt7b);

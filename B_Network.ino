@@ -243,8 +243,19 @@ static void extractBuienradarIconCode(const char* iconurl, char* out, size_t out
 // usable icon, and return its current readings translated into the
 // dashboard's internal types. Failure leaves the output params untouched
 // so the caller's RTC cache fallback can take over.
+//
+// Picker: nearest-station-with-outlier-rejection. Collect up to
+// BUIENRADAR_MAX_CANDIDATES nearest valid stations, then within
+// BUIENRADAR_CONSENSUS_KM take the mode of the icon category (tie → closest).
+// Temperature / wind / icon are then taken from the closest station that
+// voted for the winning category, so we never display readings from a
+// station whose icon we just outvoted. See CLAUDE.md "Buienradar consensus
+// picker" for the caveats — single-station outliers like Voorschoten reporting
+// OVERCAST while all neighbours report CLEAR motivated this; the approach
+// will lag by one wake during frontal passages and is worth revisiting once
+// real disagreement data is logged.
 bool fetchBuienradarNow(float &temp, float &wind,
-                        int &weatherCode, int &windBearing) {
+                        WeatherCategory &category, int &windBearing) {
   DBG("BR now heap before: "); DBGLN(ESP.getFreeHeap());
 
   WiFiClientSecure client;
@@ -261,9 +272,6 @@ bool fetchBuienradarNow(float &temp, float &wind,
     return false;
   }
 
-  // Slurp before parse — same TLS-drain reasoning as fetchOpenMeteo /
-  // fetchTrips. JsonDoc itself stays small (we only parse the array
-  // structure, not every nested string).
   String response = http.getString();
   http.end();
 
@@ -287,8 +295,17 @@ bool fetchBuienradarNow(float &temp, float &wind,
   bool haveNow = getLocalTime(&tnow);
   time_t nowEpoch = haveNow ? mktime(&tnow) : 0;
 
-  JsonObject best;
-  float bestDist = 9999.0f;
+  struct Cand {
+    float dist;
+    WeatherCategory cat;
+    float temp;
+    float ms;
+    int bearing;
+    char icon[4];
+    char name[24];
+  };
+  Cand cands[BUIENRADAR_MAX_CANDIDATES];
+  int nCands = 0;
 
   for (JsonObject s : stations) {
     char iconBuf[4];
@@ -298,68 +315,113 @@ bool fetchBuienradarNow(float &temp, float &wind,
     if (s["temperature"].isNull()) continue;
 
     if (haveNow) {
-      const char* ts = s["timestamp"] | (const char*)nullptr;  // "YYYY-MM-DDTHH:MM:SS"
-      if (ts && strlen(ts) >= 19) {
-        struct tm t = {};
-        t.tm_year = (ts[0]-'0')*1000 + (ts[1]-'0')*100 + (ts[2]-'0')*10 + (ts[3]-'0') - 1900;
-        t.tm_mon  = (ts[5]-'0')*10 + (ts[6]-'0') - 1;
-        t.tm_mday = (ts[8]-'0')*10 + (ts[9]-'0');
-        t.tm_hour = (ts[11]-'0')*10 + (ts[12]-'0');
-        t.tm_min  = (ts[14]-'0')*10 + (ts[15]-'0');
-        t.tm_sec  = (ts[17]-'0')*10 + (ts[18]-'0');
-        t.tm_isdst = -1;
-        time_t tsEpoch = mktime(&t);
-        if (tsEpoch > 0 &&
-            (nowEpoch - tsEpoch) > (long)BUIENRADAR_STALE_MIN * 60) continue;
-      }
+      time_t tsEpoch = parseISOToLocal(s["timestamp"] | (const char*)nullptr);
+      if (tsEpoch > 0 &&
+          (nowEpoch - tsEpoch) > (long)BUIENRADAR_STALE_MIN * 60) continue;
     }
 
     float lat = s["lat"] | 0.0f;
     float lon = s["lon"] | 0.0f;
     float d = haversineKm(LATITUDE, LONGITUDE, lat, lon);
-    if (d < bestDist) { bestDist = d; best = s; }
+
+    // Insertion-sort into a fixed-size buffer kept sorted by distance.
+    if (nCands == BUIENRADAR_MAX_CANDIDATES &&
+        d >= cands[BUIENRADAR_MAX_CANDIDATES - 1].dist) continue;
+
+    int pos = nCands < BUIENRADAR_MAX_CANDIDATES ? nCands
+                                                 : BUIENRADAR_MAX_CANDIDATES - 1;
+    while (pos > 0 && cands[pos - 1].dist > d) {
+      cands[pos] = cands[pos - 1];
+      pos--;
+    }
+
+    Cand &c = cands[pos];
+    c.dist = d;
+    strncpy(c.icon, iconBuf, sizeof(c.icon));
+    c.icon[sizeof(c.icon) - 1] = 0;
+    c.cat = categorizeBuienradarIcon(c.icon);
+    c.temp = s["temperature"] | 0.0f;
+    c.ms   = s["windspeed"]   | 0.0f;
+    int b = s["winddirectiondegrees"] | -1;
+    if (b < 0) {
+      b = bearingFromDutchCardinal(s["winddirection"] | "");
+      if (b < 0) b = 0;
+    }
+    c.bearing = b;
+    const char* nm = s["stationname"] | "";
+    strncpy(c.name, nm, sizeof(c.name));
+    c.name[sizeof(c.name) - 1] = 0;
+
+    if (nCands < BUIENRADAR_MAX_CANDIDATES) nCands++;
   }
 
-  if (best.isNull()) {
+  if (nCands == 0) {
     DBGLN("BR now: no usable station");
     return false;
   }
 
-  // Re-derive the icon code from the picked station.
-  char iconBuf[4];
-  extractBuienradarIconCode(best["iconurl"] | (const char*)nullptr,
-                            iconBuf, sizeof(iconBuf));
-
-  bool sunnyUnused;  // 128 px current-weather icon uses isNight, not this
-  WeatherCategory cat = categorizeBuienradarIcon(iconBuf, sunnyUnused);
-
-  // winddirectiondegrees is the canonical numeric bearing. Fall back to
-  // the Dutch cardinal string if it's missing (degrades to 8-point
-  // resolution but still correct).
-  int bearing = best["winddirectiondegrees"] | -1;
-  if (bearing < 0) {
-    bearing = bearingFromDutchCardinal(best["winddirection"] | "");
-    if (bearing < 0) bearing = 0;
+  // Mode of icon category across stations within the consensus radius.
+  // If only one station is in range we degrade gracefully to "nearest wins".
+  const int NUM_CATS = THUNDERSTORM + 1;
+  int votes[NUM_CATS] = {0};
+  int inRange = 0;
+  for (int i = 0; i < nCands; i++) {
+    if (cands[i].dist <= BUIENRADAR_CONSENSUS_KM) {
+      votes[cands[i].cat]++;
+      inRange++;
+    }
   }
 
-  float ms    = best["windspeed"]   | 0.0f;
-  temp        = best["temperature"] | 0.0f;
-  wind        = ms * 3.6f;          // m/s → km/h
-  weatherCode = categoryToSyntheticWmo(cat);
-  windBearing = bearing;
+  int maxVotes = 0;
+  for (int c = 0; c < NUM_CATS; c++) if (votes[c] > maxVotes) maxVotes = votes[c];
 
-  DBG("BR now station: "); DBG((const char*)(best["stationname"] | ""));
-  DBG(" ("); DBG(bestDist); DBG(" km) code="); DBG(iconBuf);
-  DBG(" temp="); DBG(temp); DBG(" wind="); DBG(wind);
-  DBG(" dir="); DBGLN(bearing);
+  WeatherCategory winningCat = cands[0].cat;  // default to nearest
+  if (maxVotes > 0) {
+    // Tiebreak by closest: cands is sorted, so first hit at maxVotes wins.
+    for (int i = 0; i < nCands; i++) {
+      if (cands[i].dist <= BUIENRADAR_CONSENSUS_KM &&
+          votes[cands[i].cat] == maxVotes) {
+        winningCat = cands[i].cat;
+        break;
+      }
+    }
+  }
+
+  // Source the displayed numbers from the closest in-range voter for the
+  // winning category. Falls back to the nearest candidate overall.
+  int srcIdx = 0;
+  for (int i = 0; i < nCands; i++) {
+    if (cands[i].cat == winningCat &&
+        cands[i].dist <= BUIENRADAR_CONSENSUS_KM) {
+      srcIdx = i;
+      break;
+    }
+  }
+
+  Cand &src = cands[srcIdx];
+  temp        = src.temp;
+  wind        = src.ms * 3.6f;
+  category    = src.cat;
+  windBearing = src.bearing;
+
+  DBG("BR now picker: src="); DBG(src.name);
+  DBG(" ("); DBG(src.dist); DBG(" km) code="); DBG(src.icon);
+  DBG(" inRange="); DBG(inRange); DBG("/"); DBGLN(nCands);
+#if DEBUG_LOG
+  for (int i = 0; i < nCands; i++) {
+    DBG("  cand["); DBG(i); DBG("] "); DBG(cands[i].name);
+    DBG(" "); DBG(cands[i].dist); DBG("km icon="); DBG(cands[i].icon);
+    DBG(" cat="); DBGLN((int)cands[i].cat);
+  }
+#endif
   return true;
 }
 
 // Fetch the hyper-local 2h rain nowcast (24 lines of "VVV|HH:MM" at 5-min
 // spacing). Converts each line to mm/h via the published log formula.
 // On success, writes up to 24 entries into `rainData` and the matching
-// "HH:MM\0" strings into `timeLabels[i]` (caller allocates [][20]).
-bool fetchBuienradarRain(float rainData[], char timeLabels[][20], int &rainCount) {
+// "HH:MM\0" strings into `timeLabels[i]` (caller allocates [][6]).
+bool fetchBuienradarRain(float rainData[], char timeLabels[][6], int &rainCount) {
   rainCount = 0;
 
   WiFiClientSecure client;
@@ -399,7 +461,7 @@ bool fetchBuienradarRain(float rainData[], char timeLabels[][20], int &rainCount
       float mmh = (v <= 0) ? 0.0f : powf(10.0f, ((float)v - 109.0f) / 32.0f);
       rainData[idx] = mmh;
       // "HH:MM" lives immediately after the pipe.
-      strlcpy(timeLabels[idx], body.substring(pipe + 1, pipe + 6).c_str(), 20);
+      strlcpy(timeLabels[idx], body.substring(pipe + 1, pipe + 6).c_str(), sizeof(timeLabels[idx]));
       idx++;
     }
     if (nl < 0) break;

@@ -375,11 +375,22 @@ void drawHeader(struct tm &timeinfo, DayForecast forecast[], int forecastCount,
     int dotX, dotY;
     sunDotForT(arcLeft, arcRight, horizonY, arcRise, t, dotX, dotY);
     if (isNight) {
-      // Mini crescent: black disc with an off-center white disc bitten out.
+      // Mini crescent, horns pointing right (opens right) to match the
+      // orientation of the 128px icon_moon_128 glyph used elsewhere.
       display.fillCircle(dotX, dotY, 5, BLACK);
-      display.fillCircle(dotX - 2, dotY, 4, WHITE);
+      display.fillCircle(dotX + 2, dotY, 4, WHITE);
     } else {
-      display.fillCircle(dotX, dotY, 4, BLACK);
+      // Mini sun: small disc + 8 short rays.
+      display.fillCircle(dotX, dotY, 2, BLACK);
+      for (int i = 0; i < 8; i++) {
+        float a = (float)i * PI / 4.0f;
+        float ca = cosf(a), sa = sinf(a);
+        int rx1 = dotX + (int)(4 * ca + 0.5f);
+        int ry1 = dotY + (int)(4 * sa + 0.5f);
+        int rx2 = dotX + (int)(6 * ca + 0.5f);
+        int ry2 = dotY + (int)(6 * sa + 0.5f);
+        display.drawLine(rx1, ry1, rx2, ry2, BLACK);
+      }
     }
 
     display.setFont(&Inter_Regular9pt7b);
@@ -466,11 +477,9 @@ void drawCurrentWeather(float temp, WeatherCategory category, float wind,
   }
 
   display.setFont(&Inter_Regular9pt7b);
-  char windStr[24];
-  // "from X" matches the cardinalCompass convention (direction wind comes
-  // from), so the text and the downwind-pointing arrow no longer contradict.
-  snprintf(windStr, sizeof(windStr), "%d km/h from %s",
-           (int)(wind + 0.5f), cardinalCompass(windBearing));
+  char windStr[16];
+  // Direction is already conveyed by the arrow — text is just the speed.
+  snprintf(windStr, sizeof(windStr), "%d km/h", (int)(wind + 0.5f));
   display.setCursor(227, 249);
   display.print(windStr);
 
@@ -1073,15 +1082,14 @@ void updateDisplay(
   // Dotted divider before the departures strip
   drawDashedH(MARGIN_LEFT, MARGIN_RIGHT, 455, 2, 3);
 
-  // Section 3 label: "DEPARTURES · TO BREDA" with a drawn middot (the
-  // U+00B7 char isn't in our ASCII font header).
+  // Section 3 label: "TRAINS → BREDA" — drawn arrow (U+2192 not in font).
   display.setFont(&Inter_Regular9pt7b);
   {
-    int leftW = smallCapsWidth("DEPARTURES");
-    drawSmallCaps(40, 474, "DEPARTURES");
-    int dotX = 40 + leftW + 8;
-    display.fillCircle(dotX, 470, 1, BLACK);
-    drawSmallCaps(dotX + 6, 474, "TO BREDA");
+    int leftW = smallCapsWidth("TRAINS");
+    drawSmallCaps(40, 474, "TRAINS");
+    int arrowX = 40 + leftW + 8;
+    drawRightArrow(arrowX, 468);
+    drawSmallCaps(arrowX + 12, 474, "BREDA");
   }
 
   // Section 3: Trains (new Departure-based cards)

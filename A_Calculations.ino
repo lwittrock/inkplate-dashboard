@@ -303,16 +303,6 @@ WeatherCategory categorizeBuienradarIcon(const char* code) {
   }
 }
 
-// 8-bucket cardinal compass from a meteorological wind bearing (degrees from N,
-// clockwise). 0° → "N", 45° → "NE", etc. Buckets are 45° wide and centered on
-// the cardinal/inter-cardinal points (so 23–67° is "NE").
-const char* cardinalCompass(int bearingDeg) {
-  static const char* labels[] = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-  int b = ((bearingDeg % 360) + 360) % 360;  // normalise into [0, 360)
-  int idx = (int)(((float)b + 22.5f) / 45.0f) % 8;
-  return labels[idx];
-}
-
 // Calculate delay in minutes from ISO 8601 timestamps.
 // Handles cross-midnight: if actualTotal < plannedTotal assume the actual time
 // wrapped past midnight (e.g. planned 23:58, actual 00:02 → +4 min).

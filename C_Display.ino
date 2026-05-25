@@ -247,16 +247,16 @@ static const char* makeGreeting(struct tm &timeinfo,
 
   // Date specials (tm_mon is 0-indexed). Add/remove freely; first hit wins.
   struct { int mon; int mday; const char* text; } specials[] = {
-    {  0,  1, "New year." },
-    {  2, 20, "First day of spring." },
-    {  3, 27, "Koningsdag." },          // King's Day (NL)
-    {  4,  5, "Liberation Day." },
-    {  5, 21, "Midsummer." },
-    {  8, 22, "First day of autumn." },
-    { 11, 21, "Midwinter." },
-    { 11, 25, "Christmas." },
-    { 11, 26, "Boxing Day." },
-    { 11, 31, "Year's end." },
+    {  0,  1, "New year" },
+    {  2, 20, "First day of spring" },
+    {  3, 27, "Koningsdag" },           // King's Day (NL)
+    {  4,  5, "Liberation Day" },
+    {  5, 21, "Midsummer" },
+    {  8, 22, "First day of autumn" },
+    { 11, 21, "Midwinter" },
+    { 11, 25, "Christmas" },
+    { 11, 26, "Boxing Day" },
+    { 11, 31, "Year's end" },
   };
   for (auto& s : specials) {
     if (timeinfo.tm_mon == s.mon && timeinfo.tm_mday == s.mday) return s.text;
@@ -267,10 +267,7 @@ static const char* makeGreeting(struct tm &timeinfo,
   };
 
   // No weather signal yet → just the day name.
-  if (!weatherOk) {
-    snprintf(buf, sizeof(buf), "%s.", days[timeinfo.tm_wday]);
-    return buf;
-  }
+  if (!weatherOk) return days[timeinfo.tm_wday];
 
   const char* adj;
   switch (cat) {
@@ -285,7 +282,7 @@ static const char* makeGreeting(struct tm &timeinfo,
     case THUNDERSTORM:  adj = "Stormy";  break;
     default:            adj = "Quiet";   break;
   }
-  snprintf(buf, sizeof(buf), "%s %s.", adj, days[timeinfo.tm_wday]);
+  snprintf(buf, sizeof(buf), "%s %s", adj, days[timeinfo.tm_wday]);
   return buf;
 }
 

@@ -10,7 +10,7 @@ Personal hobby project, sharing in case it's useful as a reference. Not actively
 
 Editorial newspaper-style layout, top to bottom:
 
-- **Masthead** — an editorial-headline greeting that mixes today's weather and the day of the week ("Rainy Tuesday.", "Bright Saturday.", "Foggy Monday."), with date-aware specials for new year, Christmas, Koningsdag, the equinoxes/solstices, etc. Today's date is on a second line, and a sun/moon arc on the right shows the current position between sunrise and sunset.
+- **Masthead** — an editorial-headline greeting that mixes today's weather and the day of the week ("Rainy Tuesday", "Bright Saturday", "Foggy Monday"), with date-aware specials for new year, Christmas, Koningsdag, the equinoxes/solstices, etc. Today's date is on a second line, and a sun/moon arc on the right shows the current position between sunrise and sunset.
 - **Current weather** — a 128 px weather icon, the temperature in a 48 pt hero number with a degree ring, and a wind indicator (km/h + cardinal direction + arrow).
 - **Right of weather** — either a **2-hour rain chart** with a Bayer-dithered fill (when Buienradar nowcast shows rain incoming), or a **24-hour temperature curve** with sunrise/sunset guides (when the next two hours are dry).
 - **Week strip** — 7 cells, each showing day name, a 48 px forecast icon, and a min/max temperature range bar.

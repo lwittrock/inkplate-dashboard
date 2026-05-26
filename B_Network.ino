@@ -128,16 +128,61 @@ int httpGetWithRetry(HTTPClient &http, int maxRetries = 3) {
   return -1;
 }
 
-// Open-Meteo call: 24h hourly temp curve + 7-day daily forecast only.
-// Current conditions and 2-hour rain now come from Buienradar
-// (fetchBuienradarNow / fetchBuienradarRain), which is observation-based
-// and avoids OM's model-derived "phantom cloud" artefacts for NL.
-bool fetchOpenMeteo(
-    WeatherExtras &extras,
-    DayForecast forecast[],
-    int &forecastCount
-  ) {
+// Open-Meteo — current conditions and 2-hour rain come from Buienradar
+// (fetchBuienradarNow / fetchBuienradarRain), so OM only owns the 24h
+// hourly temp curve and the 7-day daily forecast.
+//
+// Split into two URLs: hourly fetched every wake (sparkline rolls forward
+// each hour) and daily fetched only every OM_DAILY_TTL_MIN minutes or on
+// calendar-day rollover. The daily portion is held in RTC RAM
+// (omDailyCache) so most wakes only pay the small hourly fetch. See
+// docs/tier1-implementation-plans.md §2 for the design.
+
+// Hourly-only fetch (~2 KB, ~1.5 s). Runs every wake.
+static bool fetchOpenMeteoHourly(WeatherExtras &extras) {
   extras.hourlyCount = 0;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(8000);
+
+  char url[256];
+  snprintf(url, sizeof(url),
+    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+    "&hourly=temperature_2m&forecast_hours=24&timezone=auto",
+    (double)LATITUDE, (double)LONGITUDE);
+
+  if (!http.begin(client, url)) return false;
+  int code = httpGetWithRetry(http);
+  if (code != 200) {
+    http.end();
+    return false;
+  }
+  String response = http.getString();
+  http.end();
+
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, response);
+  if (error) {
+    DBG("OM hourly JSON error: "); DBGLN(error.c_str());
+    return false;
+  }
+
+  JsonArray hourly = doc["hourly"]["temperature_2m"];
+  if (!hourly.isNull()) {
+    int n = min(24, (int)hourly.size());
+    for (int i = 0; i < n; i++) {
+      extras.hourlyTemp[i] = hourly[i] | 0.0f;
+    }
+    extras.hourlyCount = n;
+  }
+  return true;
+}
+
+// Daily-only fetch (~3 KB, ~1.5 s). Runs only when cache is stale, empty,
+// or yesterday's. On success, writes results into `forecast[]` + `forecastCount`.
+static bool fetchOpenMeteoDaily(DayForecast forecast[], int &forecastCount) {
   forecastCount = 0;
 
   WiFiClientSecure client;
@@ -148,7 +193,6 @@ bool fetchOpenMeteo(
   char url[512];
   snprintf(url, sizeof(url),
     "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-    "&hourly=temperature_2m&forecast_hours=24"
     "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,"
     "sunshine_duration,daylight_duration,precipitation_sum,precipitation_hours,snowfall_sum,"
     "sunrise,sunset"
@@ -156,38 +200,21 @@ bool fetchOpenMeteo(
     (double)LATITUDE, (double)LONGITUDE);
 
   if (!http.begin(client, url)) return false;
-
   int code = httpGetWithRetry(http);
   if (code != 200) {
     http.end();
     return false;
   }
-
-  // Slurp into a String first — streaming straight from getStream() over
-  // WiFiClientSecure can return IncompleteInput when the TLS buffer drains
-  // mid-parse, especially on the larger combined response.
   String response = http.getString();
   http.end();
 
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, response);
   if (error) {
-    DBG("Open-Meteo JSON error: "); DBGLN(error.c_str());
-    DBG("Response length: "); DBGLN(response.length());
+    DBG("OM daily JSON error: "); DBGLN(error.c_str());
     return false;
   }
 
-  // 24-hour temperature curve for the dry-state right panel.
-  JsonArray hourly = doc["hourly"]["temperature_2m"];
-  if (!hourly.isNull()) {
-    int n = min(24, (int)hourly.size());
-    for (int i = 0; i < n; i++) {
-      extras.hourlyTemp[i] = hourly[i] | 0.0f;
-    }
-    extras.hourlyCount = n;
-  }
-
-  // Daily forecast
   JsonArray tmax = doc["daily"]["temperature_2m_max"];
   JsonArray tmin = doc["daily"]["temperature_2m_min"];
   JsonArray rainProb = doc["daily"]["precipitation_probability_max"];
@@ -248,6 +275,71 @@ bool fetchOpenMeteo(
   }
 
   return true;
+}
+
+// Public entry point. Always fetches hourly. Fetches daily only when the
+// RTC cache is stale, empty (cold boot), or holds yesterday's data.
+// Returns true if `forecast[]` has weekly data (cached or fresh); hourly
+// availability is reported separately via `extras.hourlyCount`.
+bool fetchOpenMeteo(
+    WeatherExtras &extras,
+    DayForecast forecast[],
+    int &forecastCount
+  ) {
+  forecastCount = 0;
+
+  bool hourlyOk = fetchOpenMeteoHourly(extras);
+  if (!hourlyOk) DBGLN("OM hourly: FAIL");
+
+  // Decide whether the daily portion needs refreshing.
+  time_t now = time(nullptr);
+  bool cachePopulated = (omDailyCache.magic == OM_DAILY_MAGIC) &&
+                        (omDailyCache.count > 0);
+  bool needRefresh = !cachePopulated;
+
+  if (cachePopulated && lastNtpSync != 0) {
+    if ((now - omDailyCache.fetchedAt) >= (long)OM_DAILY_TTL_MIN * 60) {
+      needRefresh = true;
+    } else {
+      // Calendar-day rollover — "Today" must be today.
+      struct tm nowTm, fetchTm;
+      localtime_r(&now, &nowTm);
+      localtime_r(&omDailyCache.fetchedAt, &fetchTm);
+      if (nowTm.tm_yday != fetchTm.tm_yday ||
+          nowTm.tm_year != fetchTm.tm_year) {
+        needRefresh = true;
+      }
+    }
+  }
+
+  if (needRefresh) {
+    DBG("OM daily: ");
+    DBGLN(cachePopulated ? "stale, refreshing" : "empty, fetching");
+    DayForecast fresh[7];
+    int freshCount = 0;
+    if (fetchOpenMeteoDaily(fresh, freshCount) && freshCount > 0) {
+      omDailyCache.magic     = OM_DAILY_MAGIC;
+      omDailyCache.fetchedAt = now;
+      omDailyCache.count     = freshCount;
+      for (int i = 0; i < freshCount && i < 7; i++) {
+        omDailyCache.forecast[i] = fresh[i];
+      }
+      DBG("OM daily: cached "); DBG(freshCount); DBGLN(" days");
+    } else {
+      DBGLN("OM daily: fetch failed (keeping any prior cache)");
+    }
+  } else {
+    long ageMin = (now - omDailyCache.fetchedAt) / 60;
+    DBG("OM daily: cached, "); DBG(ageMin); DBGLN("m old");
+  }
+
+  // Hand cache to caller (fresh data already written above if refresh fired).
+  forecastCount = omDailyCache.count;
+  for (int i = 0; i < forecastCount && i < 7; i++) {
+    forecast[i] = omDailyCache.forecast[i];
+  }
+
+  return forecastCount > 0;
 }
 
 // ============================================================================

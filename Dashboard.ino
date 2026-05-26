@@ -169,6 +169,27 @@ struct HsTripCache {
 };
 RTC_DATA_ATTR HsTripCache hsCache = {};
 
+// Cached Open-Meteo daily forecast (7-day strip + sunrise/sunset).
+// The hourly portion changes every wake (sparkline rolls forward an hour)
+// so hourly is fetched fresh every cycle. The daily portion barely moves
+// within a day, so it's cached and refreshed every OM_DAILY_TTL_MIN
+// minutes OR at calendar-day rollover (so "Today" stays today). See
+// docs/tier1-implementation-plans.md §2.
+//
+// IMPORTANT: bump OM_DAILY_MAGIC if you change the layout of DayForecast.
+#ifndef OM_DAILY_TTL_MIN
+#define OM_DAILY_TTL_MIN 360
+#endif
+#define OM_DAILY_MAGIC 0xC0FFEE44UL
+
+struct OmDailyCache {
+  uint32_t    magic;
+  time_t      fetchedAt;
+  int         count;
+  DayForecast forecast[7];
+};
+RTC_DATA_ATTR OmDailyCache omDailyCache = {};
+
 // ============================================================================
 // MAIN EXECUTION
 // ============================================================================

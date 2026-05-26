@@ -1,2 +1,2 @@
-2026.05.26-02
-https://github.com/lwittrock/inkplate-dashboard/releases/download/v2026.05.26-02/Dashboard.ino.bin
+2026.05.26-03
+https://github.com/lwittrock/inkplate-dashboard/releases/download/v2026.05.26-03/Dashboard.ino.bin

@@ -9,6 +9,7 @@
 
 void initHardware() {
   WiFi.mode(WIFI_STA);
+  DBG("WiFi MAC: "); DBGLN(WiFi.macAddress());
 
   // Optional static IP — skips DHCP (~1–2 s faster connect, less radio time).
   // Define WIFI_STATIC_IP / GATEWAY / SUBNET / DNS in config.h to use it.
@@ -28,6 +29,25 @@ void initHardware() {
     delay(500);
     attempts++;
   }
+
+#ifdef WIFI_STATIC_IP
+  // If the static-IP attempt didn't associate, fall back to DHCP and retry
+  // once. Without this, a stale static IP (router subnet change, address
+  // collision, typo) leaves the firmware booting fine but never reaching
+  // WL_CONNECTED — app-level rollback can't help (no crash) AND OTA can't
+  // push a fix (no network). Recovery would require USB reflash.
+  if (WiFi.status() != WL_CONNECTED) {
+    DBGLN("WiFi: static-IP attempt failed, retrying with DHCP");
+    WiFi.disconnect(true);
+    WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
+      delay(500);
+      attempts++;
+    }
+  }
+#endif
 
   if (WiFi.status() != WL_CONNECTED) {
     DBGLN("WiFi failed");

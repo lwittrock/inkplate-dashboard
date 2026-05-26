@@ -1,16 +1,32 @@
 name: Build & Release Firmware
 
-# Trigger only on digit-starting tags (v2026.05.25-01 yes; v-experiment no).
+# Auto-tags + builds + releases on every push to master that touches firmware
+# sources (*.ino, *.h, Fonts/**). Docs/workflow-only changes are filtered out
+# by the paths list. Use "[skip release]" in the commit message to opt out
+# explicitly. workflow_dispatch is available for manual rebuilds.
+#
+# Tag scheme: v<YYYY.MM.DD>-NN (NN auto-incremented per UTC day).
 on:
   push:
-    tags: ['v[0-9]*']
+    branches: [master]
+    paths:
+      - '**.ino'
+      - '**.h'
+      - 'Fonts/**'
+  workflow_dispatch:
 
 permissions:
   contents: write   # needed to create releases AND push to firmware-latest
 
+# Serialize runs so two rapid pushes don't race to claim the same -NN.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
 
     env:
       # ----------------------------------------------------------------------
@@ -45,6 +61,33 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history + all tags so we can compute next -NN
+
+      - name: Compute next version tag (v<YYYY.MM.DD>-NN)
+        id: ver
+        run: |
+          git fetch --tags --quiet
+          DATE=$(date -u +%Y.%m.%d)
+          PREFIX="v${DATE}-"
+          LAST=$(git tag --list "${PREFIX}*" | sort -V | tail -n1)
+          if [ -z "$LAST" ]; then
+            NEXT=01
+          else
+            # 10#$N forces base-10 interpretation (otherwise "08"/"09" would
+            # be parsed as octal and explode).
+            N=${LAST##*-}
+            N=$((10#$N + 1))
+            NEXT=$(printf '%02d' "$N")
+          fi
+          TAG="${PREFIX}${NEXT}"
+          VERSION="${TAG#v}"
+          echo "Computed tag: $TAG (version: $VERSION)"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Mirror to env too — used by later shell steps that prefer $VARs.
+          echo "RELEASE_TAG=$TAG"          >> "$GITHUB_ENV"
+          echo "FIRMWARE_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Set up arduino-cli
         uses: arduino/setup-arduino-cli@v2
@@ -83,15 +126,12 @@ jobs:
 
       - name: Inject FIRMWARE_VERSION header
         run: |
-          # Tag "v2026.05.25-01" → version string "2026.05.25-01"
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "Building version: $VERSION"
+          echo "Building version: $FIRMWARE_VERSION"
           cat > firmware_version.h <<EOF
           #ifndef FIRMWARE_VERSION
-          #define FIRMWARE_VERSION "$VERSION"
+          #define FIRMWARE_VERSION "$FIRMWARE_VERSION"
           #endif
           EOF
-          echo "FIRMWARE_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Stage sketch into Dashboard/ folder
         # arduino-cli requires the sketch folder to match the main .ino filename.
@@ -115,6 +155,10 @@ jobs:
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          # tag_name is set explicitly because we're triggered on a branch
+          # push (not a tag push) — action-gh-release will create the tag
+          # pointing at the current SHA.
+          tag_name: ${{ steps.ver.outputs.tag }}
           files: build/Dashboard.ino.bin
           fail_on_unmatched_files: true
           generate_release_notes: true
@@ -124,11 +168,10 @@ jobs:
           git config user.name  "Lars Wittrock"
           git config user.email "93624822+lwittrock@users.noreply.github.com"
 
-          BIN_URL="https://github.com/${{ github.repository }}/releases/download/${GITHUB_REF_NAME}/Dashboard.ino.bin"
+          BIN_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/Dashboard.ino.bin"
 
           # firmware-latest must exist as an orphan branch before first run
-          # (see docs/ota-updates-plan.md for the one-time setup).
-          # Explicit refspec because actions/checkout@v4 shallow-clones only the tag.
+          # (see OTA section of CLAUDE.md for the one-time setup).
           git fetch origin firmware-latest:firmware-latest
           # --force to ignore the untracked build artifacts in the runner workspace.
           git switch --force firmware-latest

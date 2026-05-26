@@ -61,13 +61,14 @@ You only flash via USB **once**. After that, the device pulls firmware updates o
 Once the device is on the wall and the initial flash has the OTA-capable partition scheme, you never need physical access again. Editing the dashboard becomes:
 
 ```sh
-git tag v2026.MM.DD-NN
-git push origin v2026.MM.DD-NN
+git push          # any push to master that touches *.ino/*.h/Fonts/** auto-releases
 ```
 
-GitHub Actions (see [`.github/workflows/release.yml`](.github/workflows/release.yml)) builds the binary and publishes it as a release asset. The device checks for a new version once per day (shortly after midnight Amsterdam time) by fetching `version.txt` from the `firmware-latest` branch. If newer, it downloads + flashes + reboots — all while the user is asleep, giving any new firmware ~6 hours to soak before morning.
+GitHub Actions (see [`.github/workflows/release.yml`](.github/workflows/release.yml)) computes the next tag (`v<YYYY.MM.DD>-NN`, NN auto-incremented per UTC day), builds the binary, publishes it as a release asset, and updates the `firmware-latest` manifest. The device checks for a new version once per day (shortly after midnight Amsterdam time) by fetching `version.txt` from the `firmware-latest` branch. If newer, it downloads + flashes + reboots — all while the user is asleep, giving any new firmware ~6 hours to soak before morning.
 
-App-level rollback catches crash loops: if a new firmware fails to complete `setup()` three boots in a row, the device reverts to the previous partition. Silent misbehaviour (boots but renders wrong content) isn't caught — local USB test before tagging is the only mitigation.
+Opt out of a single release with `[skip release]` in the commit message. Docs-only commits don't trigger a release (path filter excludes them). Force a rebuild without a code change via the workflow_dispatch button on the Actions page.
+
+App-level rollback catches crash loops: if a new firmware fails to complete `setup()` three boots in a row, the device reverts to the previous partition. Silent misbehaviour (boots but renders wrong content) isn't caught — local USB test before pushing is the only mitigation.
 
 See [CLAUDE.md](CLAUDE.md) — sections "OTA gotchas", "OTA design decisions", "OTA out of scope" — for the architecture, design rationale, and known limitations.
 

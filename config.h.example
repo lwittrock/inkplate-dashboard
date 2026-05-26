@@ -114,4 +114,21 @@ const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ stri
 // Default 4 = once per hour at SLEEP_DURATION=900.
 // #define FULL_REFRESH_EVERY 4
 
+// ============================================================================
+// OPTIONAL: NETWORK CACHING (battery-savers)
+// ============================================================================
+// Both have sensible #ifndef defaults in code; override only to tune.
+
+// Open-Meteo 7-day daily forecast cache TTL. The hourly sparkline still
+// refreshes every wake; only the week strip + sunrise/sunset lag this much.
+// Calendar-day rollover forces an unconditional refresh so "Today" is today.
+// Default 360 min (6 h) → ~4 refreshes/day. Lower = fresher but more battery.
+// #define OM_DAILY_TTL_MIN 360
+
+// NS Trip Planner HS-leg (GV → TBU) cache TTL. The picker only consults
+// HS when Centraal is disrupted, so HS data can usually be served from
+// cache. Any CTR disruption forces a fresh HS fetch regardless of TTL.
+// Default 45 min → covers ~2 wakes at SLEEP_DURATION=900.
+// #define HS_CACHE_TTL_MIN 45
+
 #endif

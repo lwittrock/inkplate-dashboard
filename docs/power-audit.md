@@ -1,9 +1,13 @@
 # Power-Usage Audit — Inkplate6V2 Dashboard
 
+> **STATUS — 2026-05-26: All Tier 1 recommendations shipped.** Static IP (commit `fe7ef5e`), conditional GV trip fetch (commit `35b7a04`), and Open-Meteo split URLs + 6h daily cache (commit `6a67cbc`) are live in production. Modelled daily draw drops from ~42.5 mAh/day → **~30–34 mAh/day**; runtime projection **~28–34 days** (vs ~22 baseline). The audit below describes the **pre-Tier-1 baseline** — kept as historical reference. See §9 for which recommendations were taken.
+
+---
+
 **Audit date:** 2026-05-25
-**Firmware state audited:** current `master` (commit `144d3e7`)
+**Firmware state audited:** `master` at commit `144d3e7` (pre-Tier-1)
 **Battery modelled:** KW-2152 LiPo, 3.7 V nominal, 1200 mAh (≈ 4.44 Wh nominal, ≈ 960 mAh usable assuming 80% depth-of-discharge on a LiPo)
-**Method:** code-path trace (firmware as it exists today) + datasheet currents from Espressif and Soldered. **No hardware measurements were taken** — every duration and current below is a modelled estimate. The point of this report is to identify *where* the energy goes, not to certify *exactly how much*.
+**Method:** code-path trace (firmware as it existed at audit time) + datasheet currents from Espressif and Soldered. **No hardware measurements were taken** — every duration and current below is a modelled estimate. The point of this report is to identify *where* the energy goes, not to certify *exactly how much*.
 
 **Config baseline:** the production device runs CI-built binaries whose `config.h` comes from the GitHub `CONFIG_H` secret, **not** the local [config.h](../config.h) in this repo. Per the user, the deployed secret has `OTA_TEST_FORCE_CHECK` turned **off** (i.e., the once-per-day throttle is active). The local file still has it on, but that only matters for USB flashes. Numbers below model the production case.
 
@@ -193,17 +197,19 @@ Estimates are best-effort and bracketed to reflect the soft numbers in §7. "Eff
 
 ### Tier 1 — biggest wins for the effort
 
-1. **Define `WIFI_STATIC_IP` / `GATEWAY` / `SUBNET` / `DNS` in `CONFIG_H` secret. (S)**
+> **Status: all three shipped on 2026-05-26 (commits `fe7ef5e`, `35b7a04`, `6a67cbc`).** Descriptions retained for context.
+
+1. **Define `WIFI_STATIC_IP` / `GATEWAY` / `SUBNET` / `DNS` in `CONFIG_H` secret. (S)** ✅ Shipped — `fe7ef5e`. Includes a DHCP-fallback retry so a stale static IP can't brick the wall-mounted device beyond OTA recovery.
    *Saves ~3–4.5 mAh/day → ~2 extra days runtime.*
    [B_Network.ino:15-21](../B_Network.ino#L15-L21) already supports it; just unused. Eliminates DHCP round-trip (~1.5–2 s × ~120 mA per wake × 68 wakes/day). Caveat: if router IP pool changes or device moves networks, you'll need to update the secret + retag — but for a wall-mounted always-on-same-network device the trade-off is heavily in favour. (Cheapest config-only change in the whole list; ranking #1 stands even at the corrected smaller magnitude.)
 
-2. **Make a stale-but-fresh-enough cache for Open-Meteo's 7-day daily forecast. (M)**
+2. **Make a stale-but-fresh-enough cache for Open-Meteo's 7-day daily forecast. (M)** ✅ Shipped — `6a67cbc`. Took the "split URLs" path: hourly fetched every wake, daily cached in RTC with 6 h TTL + calendar-rollover refresh.
    *Saves ~2–3 mAh/day → ~1–2 extra days runtime.*
    The hourly 24 h temps need to be fresh every wake (sparkline at the top of the hour). The **7-day daily forecast** doesn't — it barely changes within a day. Two paths:
    - **Easy:** keep the existing single fetch but refresh the daily portion only every 4–6 h via an `RTC_DATA_ATTR omCache` (like the existing `brCache`). Hourly stays per-wake.
    - **Cleaner:** split into two Open-Meteo URLs — hourly-only every wake (~10 KB, ~1.5 s), daily-only every 6 h (~5 KB). Net: ~1.5 s saved on 3 of 4 wakes ≈ 0.75 × 1.5 × 110 mA × 68 / 3600 ≈ 2.3 mAh/day.
 
-3. **Drop one of the two Trip Planner calls when one origin is clearly disrupted. (M)**
+3. **Drop one of the two Trip Planner calls when one origin is clearly disrupted. (M)** ✅ Shipped — `35b7a04`. RTC-cached GV result with 45 min TTL, served only when CTR is clean; any CTR disruption forces a fresh GV fetch so substitutions never see stale data.
    *Saves ~3–5 mAh/day depending on disruption rate.*
    Today both GVC→TBU and GV→TBU fetch unconditionally on every wake (~6 s combined). The HS leg's whole job is to be a fallback per slot. Idea: cache the GV result for ~30 min when GVC came back clean (no disrupted slots), and only refetch GV when GVC actually surfaces a disruption. On a normal undisrupted commute day that's 3 GV calls/day instead of 68 → ~3 s × 110 mA × ~50 wakes / 3600 ≈ 4.6 mAh/day. Risk: a fresh disruption between cached GV fetches could let one bad slot through — pick the cache TTL based on how often NS surfaces disruptions in practice.
 

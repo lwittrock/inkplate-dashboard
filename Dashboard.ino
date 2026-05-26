@@ -78,12 +78,14 @@ struct Departure {
   char plannedDepartureISO[26];  // "2026-05-24T12:19:00+0200" — for cross-origin sort
 };
 
-// Extra current-weather signals not in the legacy fetchOpenMeteo signature.
-// Populated alongside the existing temp/wind/code outputs by the extended
-// Open-Meteo query (current=…,wind_direction_10m; hourly=temperature_2m).
+// Crossed-concern bag used by the renderer. `windDirection` is populated
+// by Buienradar (fetchBuienradarNow — the live observation source);
+// `hourlyTemp` / `hourlyCount` are populated by Open-Meteo's hourly
+// fetch (fetchOpenMeteoHourly). Bundled here because the renderer wants
+// both alongside the current-weather temp/wind/code primaries.
 struct WeatherExtras {
-  int   windDirection;    // degrees from N, 0-360
-  float hourlyTemp[24];   // next 24h starting from current hour
+  int   windDirection;    // degrees from N, 0-360 (Buienradar)
+  float hourlyTemp[24];   // next 24h starting from current hour (Open-Meteo)
   int   hourlyCount;      // number of hourly entries actually filled
 };
 

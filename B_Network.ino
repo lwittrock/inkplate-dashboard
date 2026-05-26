@@ -694,7 +694,8 @@ int fetchTrips(const char* fromStation, const char* toStation,
 
     Departure& d = out[found];
     d.origin = origin;
-    d.note[0] = 0;  // picker may overwrite in a later step
+    d.note[0] = 0;
+    d.legCount = (uint8_t)min((int)legs.size(), 255);
 
     // Departure time: prefer actual, fall back to planned. Empty actual does
     // NOT mean cancelled — it means no realtime data yet (e.g. trip far ahead).
@@ -752,6 +753,17 @@ int fetchTrips(const char* fromStation, const char* toStation,
   }
 
   DBG("fetchTrips from "); DBG(fromStation); DBG(": parsed "); DBGLN(found);
+#if DEBUG_LOG
+  for (int i = 0; i < found; i++) {
+    DBG("  trip["); DBG(i); DBG("] "); DBG(out[i].time);
+    DBG(" -> Uni "); DBG(out[i].uniArr);
+    DBG(" legs="); DBG(out[i].legCount);
+    DBG(" track="); DBG(out[i].track);
+    if (out[i].cancelled) DBG(" CANCELLED");
+    if (out[i].delay[0]) { DBG(" delay="); DBG(out[i].delay); }
+    DBGLN("");
+  }
+#endif
   DBG("fetchTrips heap after:  "); DBGLN(ESP.getFreeHeap());
   return found;
 }

@@ -823,7 +823,9 @@ void drawWeekForecast(DayForecast forecast[], int forecastCount) {
 // 3 cards, 220 × 80 each, starting at (40, 485), 20 px gap → x = 40 + i*240.
 // Centraal cards: thin 1 px outline + small-caps origin label top-left.
 // HS cards (substituted by the picker when Centraal is bad): 2 px outline +
-// filled black pill with inverted "DH HS" + Centraal disruption note next to it.
+// filled black pill with inverted "DH HS". The pill + thick outline is the
+// origin signal — the picker no longer writes a "Centraal cancelled" note
+// (it overflowed the card and was redundant with the HS treatment).
 void drawTrains(const Departure d[], int n) {
   if (n <= 0) {
     display.setFont(&Inter_Regular12pt7b);
@@ -863,12 +865,6 @@ void drawTrains(const Departure d[], int n) {
       int pillCenter = cx + 4 + 64 / 2;
       int textW = smallCapsWidth("DH HS", 0);
       drawSmallCaps(pillCenter - textW / 2, cy + 18, "DH HS", WHITE, 0);
-
-      if (dep.note[0]) {
-        display.setTextColor(BLACK);
-        display.setCursor(cx + 74, cy + 18);
-        display.print(dep.note);
-      }
     }
 
     // --- Time (bold) ---

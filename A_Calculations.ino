@@ -158,14 +158,29 @@ int filterDominatedTrips(Departure list[], int n) {
   return kept;
 }
 
-// Per-slot train picker. For each of 3 slots, take the next un-picked
-// Centraal trip; if it's healthy (not cancelled, delay < 10 min) use it.
-// Otherwise look for an HS trip departing within ±20 min of the Centraal's
-// planned time, not cancelled, and at least 5 min in the future so the user
-// can actually get to HS. Falls back to the bad Centraal trip if no HS
-// alternative exists. Adjacent duplicate trips (same plannedDepartureISO)
-// are skipped — NS returns multiple routing options for the same physical
-// train.
+// Per-slot train picker.
+//
+// Policy:
+//   For each of 3 slots take the next un-picked Centraal trip.
+//   - CTR is "good"  → not cancelled AND delay < 10 min → use as-is.
+//   - CTR is "bad"   → look for a clean HS substitute (see below); if none,
+//                       fall through and show the bad CTR with its cancelled
+//                       / late status visible to the user.
+//   - nCtr == 0      → promote HS to primary (Trip Planner outage path),
+//                       same clean-HS filter applies.
+//
+// Clean HS substitute = ALL of:
+//   - not cancelled
+//   - legCount <= 2  (rejects via-Rotterdam multi-transfer ghosts)
+//   - departs within ±10 min of the bad CTR's planned departure
+//   - departs >= now + 5 min  (reachable on foot)
+//   - uniArr strictly earlier than every already-filled slot's uniArr
+//     (no redundant arrivals — catching the same Breda→TBU sprinter as a
+//      slot already shown adds zero info)
+//
+// No `note` text is written on substitution: the HS pill + thick outline in
+// the card renderer is the origin signal. Common case it covers: IC delayed
+// in, skips Centraal turnaround, leaves HS on time — visually obvious.
 int pickDepartures(const Departure ctr[], int nCtr,
                    const Departure hs[],  int nHs,
                    Departure out[3]) {
@@ -175,23 +190,44 @@ int pickDepartures(const Departure ctr[], int nCtr,
   bool ctrUsed[12] = {};
   bool hsUsed[12]  = {};
 
-  // Fallback: when the Centraal fetch returned 0 trips (e.g. transient
-  // Trip Planner failure), promote HS to primary so the Departures section
-  // still has content. Picker's normal substitution logic only triggers on
-  // *bad* CTR trips — with no CTR trips at all, the outer loop below
-  // exits immediately and the section would render empty even though HS
-  // data is right here.
+  // True iff `cand.uniArr` is strictly earlier than every already-filled
+  // slot's uniArr. Empty `uniArr` (no realtime arrival known) is allowed —
+  // can't dominance-check what we can't compare. strcmp on "HH:MM" orders
+  // correctly within the dashboard's active window (night mode handles
+  // midnight rollover by sleeping through it).
+  auto arrivalIsUseful = [&](const Departure& cand, int filledSlots) -> bool {
+    if (!cand.uniArr[0]) return true;
+    for (int s = 0; s < filledSlots; s++) {
+      if (!out[s].uniArr[0]) continue;
+      if (strcmp(cand.uniArr, out[s].uniArr) >= 0) return false;
+    }
+    return true;
+  };
+
+  // nCtr == 0 promotion path: same 2-leg + reachability + dedup rules.
   if (nCtr == 0) {
     int picked = 0;
     for (int i = 0; i < nHs && i < 12 && picked < 3; i++) {
       if (hs[i].cancelled) continue;
+      if (hs[i].legCount > 2) {
+        DBG("  HS primary skip [legs="); DBG(hs[i].legCount);
+        DBG("] "); DBGLN(hs[i].time);
+        continue;
+      }
       time_t t = parseISOToLocal(hs[i].plannedDepartureISO);
-      if (t == 0 || t < now + 5 * 60) continue;            // must be reachable
+      if (t == 0 || t < now + 5 * 60) continue;
       if (picked > 0 &&
           strcmp(hs[i].plannedDepartureISO,
-                 out[picked - 1].plannedDepartureISO) == 0) continue;  // dedup
+                 out[picked - 1].plannedDepartureISO) == 0) continue;
+      if (!arrivalIsUseful(hs[i], picked)) {
+        DBG("  HS primary skip [dominated] "); DBG(hs[i].time);
+        DBG(" -> "); DBGLN(hs[i].uniArr);
+        continue;
+      }
       out[picked] = hs[i];
-      strlcpy(out[picked].note, "Centraal unavailable", sizeof(out[picked].note));
+      out[picked].note[0] = 0;
+      DBG("  slot "); DBG(picked); DBG(" = HS "); DBG(hs[i].time);
+      DBG(" -> "); DBGLN(hs[i].uniArr);
       picked++;
     }
     return picked;
@@ -199,7 +235,6 @@ int pickDepartures(const Departure ctr[], int nCtr,
 
   int picked = 0;
   while (picked < 3) {
-    // Find next un-picked Centraal trip departing after the previous pick.
     int ctrIdx = -1;
     time_t ctrTime = 0;
     for (int i = 0; i < nCtr && i < 12; i++) {
@@ -212,7 +247,6 @@ int pickDepartures(const Departure ctr[], int nCtr,
     }
     if (ctrIdx < 0) break;
 
-    // Dedup: mark every entry with the same plannedDepartureISO as used.
     for (int i = 0; i < nCtr && i < 12; i++) {
       if (strcmp(ctr[i].plannedDepartureISO, ctr[ctrIdx].plannedDepartureISO) == 0) {
         ctrUsed[i] = true;
@@ -225,16 +259,39 @@ int pickDepartures(const Departure ctr[], int nCtr,
     if (ctrGood) {
       out[picked] = ctr[ctrIdx];
       out[picked].note[0] = 0;
+      DBG("  slot "); DBG(picked); DBG(" = CTR "); DBG(ctr[ctrIdx].time);
+      DBG(" -> "); DBGLN(ctr[ctrIdx].uniArr);
     } else {
-      // Look for an HS substitute around the same time.
+      DBG("  CTR "); DBG(ctr[ctrIdx].time);
+      DBG(ctr[ctrIdx].cancelled ? " cancelled" : " late");
+      DBGLN(" — looking for clean HS substitute");
+
       int hsIdx = -1;
       for (int i = 0; i < nHs && i < 12; i++) {
         if (hsUsed[i] || hs[i].cancelled) continue;
+        if (hs[i].legCount > 2) {
+          DBG("    HS "); DBG(hs[i].time);
+          DBG(" reject [legs="); DBG(hs[i].legCount); DBGLN("]");
+          continue;
+        }
         time_t t = parseISOToLocal(hs[i].plannedDepartureISO);
         if (t == 0) continue;
         long deltaMin = (long)((t - ctrTime) / 60);
-        if (deltaMin < -20 || deltaMin > 20) continue;
-        if (t < now + 5 * 60) continue;          // must be reachable
+        if (deltaMin < -10 || deltaMin > 10) {
+          DBG("    HS "); DBG(hs[i].time);
+          DBG(" reject [Δ="); DBG(deltaMin); DBGLN("m]");
+          continue;
+        }
+        if (t < now + 5 * 60) {
+          DBG("    HS "); DBG(hs[i].time); DBGLN(" reject [unreachable]");
+          continue;
+        }
+        if (!arrivalIsUseful(hs[i], picked)) {
+          DBG("    HS "); DBG(hs[i].time);
+          DBG(" reject [dominated by earlier slot, uniArr=");
+          DBG(hs[i].uniArr); DBGLN("]");
+          continue;
+        }
         hsIdx = i;
         break;
       }
@@ -246,20 +303,18 @@ int pickDepartures(const Departure ctr[], int nCtr,
           }
         }
         out[picked] = hs[hsIdx];
-        if (ctr[ctrIdx].cancelled) {
-          strlcpy(out[picked].note, "Centraal cancelled", sizeof(out[picked].note));
-        } else {
-          snprintf(out[picked].note, sizeof(out[picked].note),
-                   "Centraal %s", ctr[ctrIdx].delay);
-        }
+        out[picked].note[0] = 0;
+        DBG("  slot "); DBG(picked); DBG(" = HS "); DBG(hs[hsIdx].time);
+        DBG(" -> "); DBGLN(hs[hsIdx].uniArr);
       } else {
-        // No HS alternative — show the disrupted Centraal anyway.
         out[picked] = ctr[ctrIdx];
         out[picked].note[0] = 0;
+        DBG("  slot "); DBG(picked); DBG(" = CTR "); DBG(ctr[ctrIdx].time);
+        DBGLN(" (no clean HS — showing disruption)");
       }
     }
 
-    prevPickTime = ctrTime;  // anchor next slot on the CTR timeline
+    prevPickTime = ctrTime;
     picked++;
   }
 

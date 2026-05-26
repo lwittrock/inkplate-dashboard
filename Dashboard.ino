@@ -74,8 +74,9 @@ struct Departure {
   bool cancelled;
   char uniArr[6];                // "HH:MM" arrival at TBU
   TransferStatus transfer;
-  char note[32];                 // set by the picker when an HS trip replaces a CTR slot
+  char note[32];                 // reserved (formerly: "Centraal cancelled" overlay; dropped — HS pill is the signal)
   char plannedDepartureISO[26];  // "2026-05-24T12:19:00+0200" — for cross-origin sort
+  uint8_t legCount;              // NS Trip Planner legs.size(); picker rejects HS substitutes with legCount > 2
 };
 
 // Crossed-concern bag used by the renderer. `windDirection` is populated
@@ -161,7 +162,7 @@ RTC_DATA_ATTR BuienradarCache brCache = {};
 #ifndef HS_CACHE_TTL_MIN
 #define HS_CACHE_TTL_MIN 45
 #endif
-#define HS_CACHE_MAGIC 0xC0FFEE43UL
+#define HS_CACHE_MAGIC 0xC0FFEE44UL
 
 struct HsTripCache {
   uint32_t  magic;

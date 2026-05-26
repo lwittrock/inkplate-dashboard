@@ -99,6 +99,24 @@ static int parseDelayMin(const char* s) {
   return atoi(p);
 }
 
+// Decide whether the picker is likely to need HS substitution data.
+// True iff any of the first 5 Centraal trips is cancelled or significantly
+// delayed (matches picker's substitution trigger in pickDepartures), OR if
+// CTR returned zero trips (picker promotes HS to primary). The 5-trip
+// window matches the dedup-aware lookahead — picker only ever uses 3 slots
+// but the window has to be wider because NS returns duplicates.
+// Used to gate the cached-HS path: clean CTR → cache OK; anything else →
+// always re-fetch GV so substitutions use fresh data.
+bool ctrHasDisruption(const Departure list[], int n) {
+  if (n == 0) return true;
+  int cap = n < 5 ? n : 5;
+  for (int i = 0; i < cap; i++) {
+    if (list[i].cancelled) return true;
+    if (parseDelayMin(list[i].delay) >= 10) return true;
+  }
+  return false;
+}
+
 // Remove "dominated" trips in place: a trip is dominated when another trip
 // in the same list departs strictly later AND arrives no later. Such trips
 // are strictly worse — you'd always take the later-departing one. NS

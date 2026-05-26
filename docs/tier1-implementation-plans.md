@@ -141,8 +141,20 @@ From [A_Calculations.ino:151-229](../A_Calculations.ino#L151-L229):
 
 HS data is only consumed when (a) `nCtr == 0`, or (b) at least one of the next ~5 CTR trips is bad. Routine commute days = entire GV fetch wasted (~3–4 s WiFi).
 
+### User-facing requirement (preserved by this plan)
+The dashboard must continue to show:
+- **CTR cancellation** when it happens (current "strikethrough + bad indicators" UI)
+- **HS substitution** when CTR is bad and HS has a viable alternative (current "from HS" note)
+- **Bad CTR fallback** when CTR is bad and HS also has no viable alternative
+
+The "always re-fetch GV when CTR shows any disruption" rule below is what guarantees this. The cache only ever serves data when CTR is fully clean — i.e. when the picker doesn't consult HS at all. **You can never miss a cancellation because of the cache.**
+
+(Note: the *current* firmware already doesn't surface CTR-clean-but-GV-cancelled — picker shows CTR in that case. This plan preserves that behavior. Surfacing GV status independently would be a separate UI change.)
+
 ### RTC cache struct
 ```c
+#define HS_CACHE_MAGIC 0xC0FFEE43UL   // bump if Departure struct layout changes!
+
 struct HsTripCache {
   uint32_t  magic;
   time_t    fetchedAt;
@@ -155,46 +167,62 @@ RTC_DATA_ATTR HsTripCache hsCache = {};
 ### Decision logic in `setup()`
 ```text
 fetch CTR
+filter dominated CTR trips
 inspect CTR: ctrHasDisruption(ctrRaw, nCtr)?
                 — any of first min(5, nCtr) trips: cancelled OR delay >= 10
                 — OR nCtr == 0
 
-  if YES → fetch GV fresh (current behaviour); on success, overwrite cache
-  if NO and hsCache.magic OK and hsCache.fetchedAt within HS_CACHE_TTL_MIN
-         and cache has >= 3 future-departing trips
-         → use cached GV, skip fetch
-  otherwise (cache stale/empty/insufficient) → fetch GV fresh; overwrite cache
+  if YES → fetch GV fresh
+            ├─ on success: filter, overwrite cache, hand to picker
+            └─ on FAILURE: fall back to hsCache if non-empty (log "fetch failed,
+                           using cache"); else nHs = 0 (same as today)
+  if NO  → cache valid (magic OK AND now - fetchedAt < HS_CACHE_TTL_MIN)?
+            ├─ YES: serve cache directly to picker (no fetch)
+            └─ NO:  fetch GV fresh, filter, overwrite cache, hand to picker
 ```
 
-Always re-fetching on disrupted CTR preserves correctness: substitutions only ever use fresh GV data.
+Key correctness invariants:
+- Whenever picker needs HS data (CTR disrupted), we always *try* to fetch fresh first.
+- Cache is never consulted when CTR is disrupted *unless* the fresh fetch fails — strictly better than today's "nHs=0 on fetch failure" behavior.
+- On a clean-CTR wake, picker doesn't look at HS at all, so cache content doesn't matter for output.
 
 ### Cache TTL
-Start at 30 min (~2 wakes covered). Increase to 60 min if disruption-free days dominate.
+**Default 45 min** (covers ~2 wakes with 15-min cadence → ~67% skip rate, matching the savings estimate). 30 min would only cover 1 wake (~50% skip), undershooting the target.
+
+### What we explicitly do NOT do (decided overkill)
+- Invalidate cache on `STATION_CODE_HS` / `STATION_CODE_DESTINATION` change — never happens in practice.
+- Time-travel safety with `abs(now - fetchedAt)` — ESP32 RTC drift is <1 s/day, NTP corrections are sub-second.
+- "Cache must have ≥ N future trips" rule — overspecified. Cache only matters when picker doesn't consult HS, so an empty cache on a clean-CTR wake is fine.
 
 ### Steps
-1. Add `HS_CACHE_TTL_MIN` (default 30) to [config.h.example](../config.h.example).
-2. Add `HsTripCache hsCache` `RTC_DATA_ATTR` in [Dashboard.ino](../Dashboard.ino).
+1. Add `#ifndef HS_CACHE_TTL_MIN #define HS_CACHE_TTL_MIN 45 #endif` somewhere globally accessible. Optional `config.h.example` override.
+2. Add `HsTripCache hsCache` `RTC_DATA_ATTR` + magic constant in [Dashboard.ino](../Dashboard.ino).
 3. Add `bool ctrHasDisruption(const Departure[], int n)` helper in [A_Calculations.ino](../A_Calculations.ino).
-4. Branch the GV fetch call site in [Dashboard.ino](../Dashboard.ino) `setup()`. On cache hit, populate `hsRaw[]`/`nHs` from cache.
-5. Cache write: after every successful GV fetch (disrupted OR not), overwrite cache.
-6. Debug logging: add `(cached)` marker to the existing "HS raw: N" line when serving from cache.
+4. Add `bool hsCacheValid()` helper (magic + TTL check).
+5. Refactor GV fetch call site in [Dashboard.ino](../Dashboard.ino) `setup()` per the decision logic above. **Cache write happens AFTER `filterDominatedTrips` so we cache the post-filter list — smaller, matches picker view.**
+6. Debug logging: `(cached, Nm old)` marker on the "HS raw" line when serving from cache, `(fetch failed, using cache)` marker on the disrupted-path fallback.
 
 ### Refined savings
 - GV fetch ≈ 3 s × 110 mA = 330 mAs/wake when skipped.
-- Skip rate: assume conservative 75 % of weekday wakes have no slot-level disruption on this route.
-- Save ≈ 330 × 0.75 × 68 / 3600 ≈ **4.7 mAh/day**.
-- **Range: 3.5–5.5 mAh/day** (~2–3 extra days runtime). Largest single Tier 1 win.
+- 45-min TTL ≈ 67 % skip rate on disruption-free days; disruption-free days assumed ~80 % of wakes.
+- Effective skip rate ≈ 0.8 × 0.67 ≈ 53 % across all wakes (mixed days).
+- Save ≈ 330 × 0.53 × 68 / 3600 ≈ **3.3 mAh/day** sustained, **4.7 mAh/day** on fully disruption-free days.
+- **Range: 3–5 mAh/day** (~2 extra days runtime). Largest single Tier 1 win.
 
 ### Edge cases
-- CTR fetch fails entirely → forces GV fetch (cache not consulted). Picker's "Centraal unavailable" fallback gets fresh HS data. Correct.
+- CTR fetch fails entirely (`nCtr == 0`) → counts as disruption → forces GV fetch. If GV also fails, fall back to cache (new behavior — improvement over today). Picker's "Centraal unavailable" branch then uses whatever HS data is available.
 - Disruption appears mid-TTL → next wake's CTR sees it → re-fetches GV. Cache never serves data when picker actually needs substitution.
-- Stale cached trips that have already departed → picker's `t < now + 5*60` guard filters them.
-- OTA-induced RTC loss → empty cache → one GV fetch. Negligible.
+- Stale cached trips that have already departed → picker's `t < now + 5*60` guard filters them, naturally.
+- OTA-induced RTC loss → magic mismatch → empty cache → one forced GV fetch. Negligible.
+
+### CLAUDE.md addition required
+Add a line to the "Working with Claude Code" section: **"If you add a field to the `Departure` struct, bump `HS_CACHE_MAGIC` in `Dashboard.ino`. The RTC cache reads bytes positionally; a layout change without a magic bump silently reads garbage into the new field."**
 
 ### Verification
-- Force CTR-disruption appearance in a serial run (e.g. temporarily lower delay threshold) and confirm GV fetch fires.
-- Normal run: confirm `Fetching trips GV -> TBU... (cached, Nm old)` appears.
+- Force CTR-disruption appearance in a serial run (e.g. temporarily lower the delay threshold) and confirm GV fetch fires.
+- Normal run: confirm `HS raw: N (cached, Nm old)` appears in serial.
 - Spot-check picker slots remain correct when GV served from cache.
+- (No-USB option:) just trust the OTA — if the dashboard keeps updating and substitutions still appear during real disruptions, it works.
 
 ---
 
@@ -204,7 +232,7 @@ Start at 30 min (~2 wakes covered). Increase to 60 min if disruption-free days d
 |---|---|---|---|---|
 | baseline | — | — | 0 mAh | ~22 days |
 | 1 | Static IP + DHCP fallback | S | 2.5–4.5 mAh | ~24 days |
-| 3 | Conditional GV fetch (30 min TTL) | M | 3.5–5.5 mAh | ~27 days |
+| 3 | Conditional GV fetch (45 min TTL) | M | 3–5 mAh | ~26 days |
 | 2 | OM split URLs + daily cache | M | 2.5–3 mAh | ~30 days |
 
 (Order in this table matches the suggested rollout order, not the audit's numbering.)

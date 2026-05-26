@@ -147,6 +147,28 @@ RTC_DATA_ATTR BuienradarCache brCache = {};
 #define NTP_RESYNC_MIN 60
 #endif
 
+// Cached-GV (HS) Trip Planner result, persisted across deep sleep. Only
+// served to the picker when Centraal looks clean (no disruptions in the
+// next 5 trips) — any CTR disruption forces a fresh GV fetch so the
+// substitution logic always works on fresh data. See docs/tier1-
+// implementation-plans.md §3 for the design.
+//
+// IMPORTANT: bump HS_CACHE_MAGIC if you change the layout of the Departure
+// struct. The cache reads bytes positionally — a layout change without a
+// magic bump silently reads garbage into the new field.
+#ifndef HS_CACHE_TTL_MIN
+#define HS_CACHE_TTL_MIN 45
+#endif
+#define HS_CACHE_MAGIC 0xC0FFEE43UL
+
+struct HsTripCache {
+  uint32_t  magic;
+  time_t    fetchedAt;
+  int       count;
+  Departure trips[6];
+};
+RTC_DATA_ATTR HsTripCache hsCache = {};
+
 // ============================================================================
 // MAIN EXECUTION
 // ============================================================================
@@ -262,11 +284,47 @@ void setup() {
   nCtr = filterDominatedTrips(ctrRaw, nCtr);
   DBG("CTR after dominance filter: "); DBGLN(nCtr);
 
-  DBGLN("Fetching trips GV -> TBU...");
+  // Conditional GV fetch — see docs/tier1-implementation-plans.md §3.
+  // Clean CTR → picker won't consult HS → serve cache (or refresh if stale).
+  // Disrupted CTR → always fetch fresh GV; only fall back to cache if that
+  // fetch also fails, which is strictly better than today's nHs=0 behavior.
   Departure hsRaw[6];
-  int nHs = fetchTrips(STATION_CODE_HS, STATION_CODE_DESTINATION, ORIGIN_HS, hsRaw, 6);
-  DBG("HS  raw: "); DBGLN(nHs);
-  nHs = filterDominatedTrips(hsRaw, nHs);
+  int nHs = 0;
+  bool ctrDisrupted = ctrHasDisruption(ctrRaw, nCtr);
+  bool cacheFresh   = (hsCache.magic == HS_CACHE_MAGIC) &&
+                      (lastNtpSync != 0) &&
+                      ((time(nullptr) - hsCache.fetchedAt) < (long)HS_CACHE_TTL_MIN * 60);
+
+  if (!ctrDisrupted && cacheFresh) {
+    nHs = hsCache.count;
+    for (int i = 0; i < nHs && i < 6; i++) hsRaw[i] = hsCache.trips[i];
+    long ageMin = (time(nullptr) - hsCache.fetchedAt) / 60;
+    DBG("HS  raw: "); DBG(nHs);
+    DBG(" (cached, "); DBG(ageMin); DBGLN("m old)");
+  } else {
+    DBG("Fetching trips GV -> TBU...");
+    if (ctrDisrupted) DBGLN(" [CTR disrupted, forcing fresh fetch]");
+    else              DBGLN(" [cache stale/empty]");
+    nHs = fetchTrips(STATION_CODE_HS, STATION_CODE_DESTINATION, ORIGIN_HS, hsRaw, 6);
+    DBG("HS  raw: "); DBGLN(nHs);
+    nHs = filterDominatedTrips(hsRaw, nHs);
+
+    if (nHs > 0) {
+      // Cache the post-filter list — smaller, matches what the picker sees.
+      hsCache.magic     = HS_CACHE_MAGIC;
+      hsCache.fetchedAt = time(nullptr);
+      hsCache.count     = nHs;
+      for (int i = 0; i < nHs && i < 6; i++) hsCache.trips[i] = hsRaw[i];
+    } else if (ctrDisrupted && hsCache.magic == HS_CACHE_MAGIC && hsCache.count > 0) {
+      // Disrupted-path fetch failed — fall back to cache so the picker
+      // still has substitution candidates. Strictly better than today.
+      nHs = hsCache.count;
+      for (int i = 0; i < nHs && i < 6; i++) hsRaw[i] = hsCache.trips[i];
+      long ageMin = (time(nullptr) - hsCache.fetchedAt) / 60;
+      DBG("HS  fetch failed, using cache ("); DBG(ageMin); DBGLN("m old)");
+    }
+  }
+
   DBG("HS  after dominance filter: "); DBGLN(nHs);
 
   Departure departures[3];

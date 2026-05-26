@@ -162,7 +162,12 @@ RTC_DATA_ATTR BuienradarCache brCache = {};
 #ifndef HS_CACHE_TTL_MIN
 #define HS_CACHE_TTL_MIN 45
 #endif
-#define HS_CACHE_MAGIC 0xC0FFEE44UL
+// Magic sequence so each RTC cache has a distinct sentinel:
+//   OTA_RTC_MAGIC   = 0xC0FFEE42 (D_OTA.ino)
+//   HS_CACHE_MAGIC  = 0xC0FFEE45 (bumped from 43 when legCount field added)
+//   OM_DAILY_MAGIC  = 0xC0FFEE44 (below)
+// Keep them distinct so a future "bump on layout change" is unambiguous.
+#define HS_CACHE_MAGIC 0xC0FFEE45UL
 
 struct HsTripCache {
   uint32_t  magic;

@@ -237,19 +237,52 @@ static int hhmmToMinutes(const char* hhmm) {
        + (hhmm[3] - '0') * 10  + (hhmm[4] - '0');
 }
 
-// Editorial-headline greeting. Date specials take priority over weather;
-// when neither fires (which is most days) we fall back to time-of-day so
-// the masthead still differs morning vs afternoon. Output is one short
-// line of ≤ ~28 chars to fit the 18pt slot.
+// Editorial-headline greeting. Date specials take priority. Otherwise we
+// pick a base adjective from today's full-day category (with temp-aware
+// variants for CLEAR/PARTLY_CLOUDY), apply at most one override (Stormy
+// wind / Freezing / Cold / Hot / Windy), and emit a single "Wet and windy"
+// combo when rain + notable wind co-occur. From 16:00 onward, if the day
+// was rainy earlier but is now clearly clearing up, we swap base to the
+// current snapshot — the only place live conditions influence the headline.
+// Final string is width-checked at runtime; combo degrades to the single
+// adjective if it would overflow the masthead slot.
+//
+// Thresholds documented in the plan file. Tune by watching the [head]
+// debug line over a few weeks of real days.
+static const char* baseAdjective(WeatherCategory cat,
+                                 int tempMax, uint8_t uvMaxX10) {
+  switch (cat) {
+    case CLEAR:
+      if (tempMax >= 25 && tempMax < 28 && uvMaxX10 >= 50) return "Glorious";
+      if (tempMax <= 8)  return "Crisp";
+      return "Sunny";
+    case PARTLY_CLOUDY:
+      return (tempMax >= 18) ? "Bright" : "Mixed";
+    case OVERCAST:     return "Grey";
+    case DRIZZLE:      return "Drizzly";
+    case RAIN:         return "Wet";
+    case RAIN_HEAVY:   return "Soaking";
+    case FOG:          return "Foggy";
+    case SNOW:         return "Snowy";
+    case THUNDERSTORM: return "Stormy";
+    default:           return "Quiet";
+  }
+}
+
+static bool isRainFamily(WeatherCategory c) {
+  return c == DRIZZLE || c == RAIN || c == RAIN_HEAVY || c == THUNDERSTORM;
+}
+
 static const char* makeGreeting(struct tm &timeinfo,
-                                WeatherCategory cat, bool weatherOk) {
+                                const DayForecast &today, bool forecastOk,
+                                WeatherCategory currentCategory, bool weatherOk) {
   static char buf[40];
 
-  // Date specials (tm_mon is 0-indexed). Add/remove freely; first hit wins.
+  // 1. Date specials (tm_mon is 0-indexed). First hit wins.
   struct { int mon; int mday; const char* text; } specials[] = {
     {  0,  1, "New year" },
     {  2, 20, "First day of spring" },
-    {  3, 27, "Koningsdag" },           
+    {  3, 27, "Koningsdag" },
     {  4,  5, "Liberation Day" },
     {  5, 21, "Midsummer" },
     {  8, 22, "First day of autumn" },
@@ -267,23 +300,75 @@ static const char* makeGreeting(struct tm &timeinfo,
     "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"
   };
 
-  // No weather signal yet → just the day name.
-  if (!weatherOk) return days[timeinfo.tm_wday];
+  // 2. Without the daily forecast we have no honest signal — show the day name
+  //    rather than the old current-only snapshot, which is the bug we're fixing.
+  if (!forecastOk) return days[timeinfo.tm_wday];
 
-  const char* adj;
-  switch (cat) {
-    case CLEAR:         adj = "Sunny";  break;
-    case PARTLY_CLOUDY: adj = "Semi sunny";    break;
-    case OVERCAST:      adj = "Grey";    break;
-    case FOG:           adj = "Foggy";   break;
-    case DRIZZLE:       adj = "Drizzly"; break;
-    case RAIN:          adj = "Rainy";   break;
-    case RAIN_HEAVY:    adj = "Wet";     break;
-    case SNOW:          adj = "Snowy";   break;
-    case THUNDERSTORM:  adj = "Stormy";  break;
-    default:            adj = "Quiet";   break;
+  // 3. Base = today's full-day category.
+  WeatherCategory base = today.category;
+
+  // 4. Evening swap (from 16:00): if the day was rain-family but now clearly
+  //    clearing up, swap base to the current snapshot.
+  bool eveningMode = (timeinfo.tm_hour >= 16);
+  bool swapped = false;
+  if (eveningMode && weatherOk && isRainFamily(base) &&
+      (currentCategory == CLEAR || currentCategory == PARTLY_CLOUDY)) {
+    base = currentCategory;
+    swapped = true;
   }
-  snprintf(buf, sizeof(buf), "%s %s", adj, days[timeinfo.tm_wday]);
+
+  // 5. Base adjective.
+  const char* adj = baseAdjective(base, today.tempMax, today.uvMaxX10);
+
+  // 6. Overrides — first match wins. Priority: extreme wind > freeze > cold >
+  //    heat > notable wind. Heat/cold beat notable wind because temperature is
+  //    more defining on a hot-and-windy day.
+  const char* overrideAdj = nullptr;
+  if (today.gustMaxKmh >= 75 || today.windMaxKmh >= 50)      overrideAdj = "Stormy";
+  else if (today.feelsMax <= 0)                              overrideAdj = "Freezing";
+  else if (today.feelsMax <= 5)                              overrideAdj = "Cold";
+  else if (today.feelsMax >= 28)                             overrideAdj = "Hot";
+  else if (today.gustMaxKmh >= 40 || today.windMaxKmh >= 25) overrideAdj = "Windy";
+
+  if (overrideAdj) adj = overrideAdj;
+
+  // 7. Combo (only one): rain-family + notable wind, but only if no stronger
+  //    override has already claimed the slot.
+  bool useCombo = false;
+  if (!overrideAdj && isRainFamily(base) &&
+      (today.gustMaxKmh >= 40 || today.windMaxKmh >= 25)) {
+    useCombo = true;
+  }
+
+  const char* dayName = days[timeinfo.tm_wday];
+  if (useCombo) {
+    snprintf(buf, sizeof(buf), "Wet and windy %s", dayName);
+    // 8. Width check — if the combo overflows the masthead slot
+    //    (x=40 → ~x=620, with breathing room), fall back to single adj.
+    int16_t bx, by; uint16_t bw, bh;
+    display.setFont(&Inter_Bold18pt7b);
+    display.getTextBounds(buf, 0, 0, &bx, &by, &bw, &bh);
+    if (bw > 564) {  // 580 px slot - 16 px breathing room before sun arc
+      snprintf(buf, sizeof(buf), "%s %s", adj, dayName);
+    }
+  } else {
+    snprintf(buf, sizeof(buf), "%s %s", adj, dayName);
+  }
+
+  // 9. Debug log — the only way threshold tuning isn't blind. Cheap, off in
+  //    production builds.
+  DBG("[head] eve="); DBG(eveningMode ? 1 : 0);
+  DBG(" swap="); DBG(swapped ? 1 : 0);
+  DBG(" base="); DBG((int)base);
+  DBG(" tmax="); DBG(today.tempMax);
+  DBG(" feels="); DBG(today.feelsMax);
+  DBG(" wind="); DBG(today.windMaxKmh);
+  DBG(" gust="); DBG(today.gustMaxKmh);
+  DBG(" uv="); DBG(today.uvMaxX10);
+  DBG(" override="); DBG(overrideAdj ? overrideAdj : "-");
+  DBG(" combo="); DBG(useCombo ? 1 : 0);
+  DBG(" -> "); DBGLN(buf);
+
   return buf;
 }
 
@@ -299,7 +384,12 @@ void drawHeader(struct tm &timeinfo, DayForecast forecast[], int forecastCount,
   display.setFont(&Inter_Bold18pt7b);
   display.setTextColor(BLACK);
   display.setCursor(40, 48);
-  display.print(makeGreeting(timeinfo, currentCategory, weatherOk));
+  // Pass forecast[0] (today) as the full-day signal source; currentCategory
+  // is used only for the evening-swap test and the !forecastOk fallback path.
+  DayForecast empty = {};
+  const DayForecast &today = (forecastOk && forecastCount >= 1) ? forecast[0] : empty;
+  display.print(makeGreeting(timeinfo, today, forecastOk && forecastCount >= 1,
+                             currentCategory, weatherOk));
 
   // --- Date "Sun · 24 May 2026" ---
   // The middot glyph isn't in our ASCII-only font header, so draw a small

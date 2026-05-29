@@ -100,6 +100,10 @@ struct DayForecast {
   bool useSunnyVariant;      // Whether to use sun+rain/snow icon variant
   char sunrise[6];           // "HH:MM"
   char sunset[6];            // "HH:MM"
+  int     windMaxKmh;        // wind_speed_10m_max — for headline wind override
+  int     gustMaxKmh;        // wind_gusts_10m_max — for headline wind override
+  int     feelsMax;          // apparent_temperature_max — for heat/cold override
+  uint8_t uvMaxX10;          // uv_index_max × 10 — "fully clear" proxy for Glorious tier
 };
 
 // ============================================================================
@@ -188,7 +192,9 @@ RTC_DATA_ATTR HsTripCache hsCache = {};
 #ifndef OM_DAILY_TTL_MIN
 #define OM_DAILY_TTL_MIN 360
 #endif
-#define OM_DAILY_MAGIC 0xC0FFEE44UL
+// Bumped from 0xC0FFEE44 → 0xC0FFEE46 when windMaxKmh, gustMaxKmh, feelsMax,
+// uvMaxX10 were added to DayForecast for the editorial headline picker.
+#define OM_DAILY_MAGIC 0xC0FFEE46UL
 
 struct OmDailyCache {
   uint32_t    magic;
@@ -197,6 +203,13 @@ struct OmDailyCache {
   DayForecast forecast[7];
 };
 RTC_DATA_ATTR OmDailyCache omDailyCache = {};
+
+// Tripwire for the layout-bump discipline (CLAUDE.md). If this fires, the
+// DayForecast layout changed — recompute the size below AND bump
+// OM_DAILY_MAGIC in the same commit, otherwise a stale RTC cache silently
+// reads garbage into the new field offsets.
+static_assert(sizeof(DayForecast) == 56,
+              "DayForecast layout changed — bump OM_DAILY_MAGIC and update this size");
 
 // ============================================================================
 // MAIN EXECUTION

@@ -195,7 +195,8 @@ static bool fetchOpenMeteoDaily(DayForecast forecast[], int &forecastCount) {
     "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
     "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,"
     "sunshine_duration,daylight_duration,precipitation_sum,precipitation_hours,snowfall_sum,"
-    "sunrise,sunset"
+    "sunrise,sunset,"
+    "wind_speed_10m_max,wind_gusts_10m_max,apparent_temperature_max,uv_index_max"
     "&forecast_days=7&timezone=auto",
     (double)LATITUDE, (double)LONGITUDE);
 
@@ -227,6 +228,10 @@ static bool fetchOpenMeteoDaily(DayForecast forecast[], int &forecastCount) {
   JsonArray dates = doc["daily"]["time"];
   JsonArray sunriseArr = doc["daily"]["sunrise"];
   JsonArray sunsetArr  = doc["daily"]["sunset"];
+  JsonArray windMax = doc["daily"]["wind_speed_10m_max"];
+  JsonArray gustMax = doc["daily"]["wind_gusts_10m_max"];
+  JsonArray feelsMaxArr = doc["daily"]["apparent_temperature_max"];
+  JsonArray uvMaxArr = doc["daily"]["uv_index_max"];
 
   forecastCount = min(7, (int)tmax.size());
   const char* dayNames[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
@@ -247,6 +252,18 @@ static bool fetchOpenMeteoDaily(DayForecast forecast[], int &forecastCount) {
     forecast[i].category = calculateDailyWeather(
       apiCode, precip, precipH, snow, sunHours, dayHours, useSunnyVariant);
     forecast[i].useSunnyVariant = useSunnyVariant;
+
+    // Headline-picker inputs. Round wind/feels to int; UV stored ×10 in a
+    // single byte (range 0–150, clamped). Defaults of 0 are safe — the picker
+    // overrides are all "above threshold" tests, so missing data just doesn't
+    // trigger them.
+    forecast[i].windMaxKmh = (int)(windMax[i] | 0.0f);
+    forecast[i].gustMaxKmh = (int)(gustMax[i] | 0.0f);
+    forecast[i].feelsMax   = (int)(feelsMaxArr[i] | 0.0f);
+    float uv = uvMaxArr[i] | 0.0f;
+    if (uv < 0) uv = 0;
+    if (uv > 15) uv = 15;
+    forecast[i].uvMaxX10 = (uint8_t)(uv * 10.0f);
 
     // Sunrise / sunset: extract "HH:MM" from "YYYY-MM-DDTHH:MM"
     forecast[i].sunrise[0] = 0;

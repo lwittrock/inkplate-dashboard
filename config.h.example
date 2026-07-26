@@ -125,6 +125,18 @@ const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ stri
 // Default 360 min (6 h) → ~4 refreshes/day. Lower = fresher but more battery.
 // #define OM_DAILY_TTL_MIN 360
 
+// Adaptive wake cadence. SLEEP_DURATION above is the *peak* interval; the
+// device falls back to OFFPEAK_SLEEP_DURATION outside the weekday commute
+// windows below. Weekends stay at SLEEP_DURATION all day regardless.
+// Fewer wakes is the largest remaining battery lever (WiFi-active time is
+// ~92% of the daily budget) — see docs/power-audit.md §9 #9.
+// To disable: set OFFPEAK_SLEEP_DURATION equal to SLEEP_DURATION.
+// #define OFFPEAK_SLEEP_DURATION (30UL * 60)
+// #define PEAK_AM_START_MIN (6 * 60 + 30)   // 06:30
+// #define PEAK_AM_END_MIN   (9 * 60 + 30)   // 09:30
+// #define PEAK_PM_START_MIN (16 * 60)       // 16:00
+// #define PEAK_PM_END_MIN   (19 * 60 + 30)  // 19:30
+
 // NS Trip Planner HS-leg (GV → TBU) cache TTL. The picker only consults
 // HS when Centraal is disrupted, so HS data can usually be served from
 // cache. Any CTR disruption forces a fresh HS fetch regardless of TTL.

@@ -55,7 +55,9 @@ Key settings:
 | `NS_API_KEY` | NS Dutch Railways API key (in `secrets.h`) |
 | `LATITUDE` / `LONGITUDE` | Location for Open-Meteo |
 | `TIMEZONE` | POSIX TZ string (NOT IANA — see TZ note below) |
-| `SLEEP_DURATION` | Seconds between updates (default 900) |
+| `SLEEP_DURATION` | Seconds between updates during peak windows (default 900) |
+| `OFFPEAK_SLEEP_DURATION` | Seconds between updates outside weekday commute windows (default 1800). Set equal to `SLEEP_DURATION` to disable adaptive cadence |
+| `PEAK_AM_*` / `PEAK_PM_*` | Weekday commute windows that get the fast cadence. Weekends ignore these and run at `SLEEP_DURATION` all day |
 | `NIGHT_START_MIN` / `NIGHT_END_MIN` | Minutes since midnight for night mode (default 23:30–06:30) |
 | `STATION_CODE_CENTRAL` / `STATION_CODE_HS` / `STATION_CODE_DESTINATION` | NS station codes |
 | `DEBUG_LOG` | Optional `#define DEBUG_LOG 1` — enables Serial output at 115200 baud |
@@ -227,6 +229,7 @@ These were discovered during integration spikes and are not derivable from the c
 - **`checkForUpdates()` runs BEFORE `handleNightMode()`** so OTA can fire on night wakes (first wake after midnight triggers it). New firmware then has ~6 hours to soak before the dashboard wakes for the morning — if it rolls back, the user never sees the crash cycle.
 - **"dev" lexical compare exception is required for local-build → OTA upgrade path.** `FIRMWARE_VERSION="dev"` lexically sorts > all digit-starting versions because `'d'` > `'2'` in ASCII. Without an explicit `localIsDev` exception in `checkForUpdates()`, a freshly USB-flashed local build can never OTA-pull a tagged release. Don't remove the exception.
 - **GitHub release asset URLs 302-redirect** from `github.com/.../releases/download/...` to `objects.githubusercontent.com`. `httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS)` is required. Without it the download returns 0 bytes silently.
+- **A USB-flashed local build cannot survive its first boot while a newer-dated release exists.** Consequence of the `"dev"` lexical exception above: `checkForUpdates()` runs at `Dashboard.ino:272`, long before `updateDisplay()` at :417, so a local build boots, immediately OTAs itself to the latest release, and reboots — you never see your own code render. Observed 2026-07-26 while testing a WiFi subnet change: the fresh build connected fine, then replaced itself with a two-month-old release carrying the *old* subnet, which then couldn't reach the network at all. Symptom is "the upload didn't work" (display never changes) even though esptool verified every block. **The order is: push to master, wait for the release to build green, THEN USB flash** — the local build will OTA-pull the release you just made, which converges to the right firmware. To bench-test a local build in isolation instead, comment out `checkForUpdates()` for that flash only.
 - **Serial output between USB upload and serial monitor reconnect is lost.** The boot banner and `Wake #` from the very first boot after `arduino-cli upload` are typically missed because Arduino IDE closes the serial port for upload and the user reopens it after the hard reset. Don't conclude "the firmware didn't reboot" just because you didn't see those lines.
 
 **OTA design decisions (the WHYs, since the code shows the HOWs):**
@@ -250,8 +253,11 @@ These were discovered during integration spikes and are not derivable from the c
 - Battery-threshold gating of OTA checks (no battery monitoring code exists today; not worth adding just for this)
 - A manual "skip OTA" recovery path via the WAKE button (frame is fully enclosed, button not accessible; physical pull + USB reflash is the only recovery if rollback also fails)
 
+**Adaptive wake cadence (`nextSleepSeconds()` in [B_Network.ino](B_Network.ino)):** wake count is the largest remaining battery lever because WiFi-active time is ~92% of the daily budget. The power audit's "flat 30-min wakes" option was rejected for making the 2 h rain nowcast up to 30 min stale — but that staleness only costs anything when the user is about to leave the house. So peak windows (weekday commute) keep 15 min and the rest of the weekday runs at 30 min. **Weekends stay at 15 min all day** — no fixed commute to anchor peaks to, and the panel is read at unpredictable times. If `getLocalTime()` fails, the function returns `SLEEP_DURATION`: failing toward *too-frequent* wakes costs battery, failing toward too-long ones leaves a stale dashboard for hours. All five constants have `#ifndef` defaults in `Dashboard.ino`, so a lagging CI `CONFIG_H` secret can't break the build (unlike a bare `const` — see the rename workflow above).
+
 **Battery optimizations consciously skipped:**
 - TLS cert pinning — small power win, big code/maintenance cost. Defer until `setInsecure()` stops working (which it isn't).
 - CPU clock below 80 MHz — causes WiFi instability.
 - Region-targeted partial refresh — ghosting risk with Bayer-dithered fills is too high.
+- `FULL_REFRESH_EVERY` 4 → 8 — evaluated 2026-07-26 and rejected. Saves ~0.3 mAh/day (~1% of budget, ~⅓ of a day of runtime) in exchange for letting ghosting accumulate over 7 partials instead of 3. The rain chart's Bayer-dithered fills are the worst case for ghost accumulation (many single pixels toggling per wake), which is the same reason region-targeted partial refresh is skipped above. Bad ratio; don't revisit without a visual complaint driving it.
 - Sleep current optimization — ~30–40 µA is already near the floor for Inkplate 6's onboard regulators.

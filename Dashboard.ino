@@ -154,6 +154,27 @@ RTC_DATA_ATTR BuienradarCache brCache = {};
 #define NTP_RESYNC_MIN 60
 #endif
 
+// Adaptive wake cadence — see nextSleepSeconds() in B_Network.ino. Weekday
+// commute windows wake at SLEEP_DURATION; the rest of the weekday uses
+// OFFPEAK_SLEEP_DURATION. Weekends ignore both windows and stay at
+// SLEEP_DURATION all day. Set OFFPEAK_SLEEP_DURATION equal to
+// SLEEP_DURATION to disable the whole scheme.
+#ifndef OFFPEAK_SLEEP_DURATION
+#define OFFPEAK_SLEEP_DURATION (30UL * 60)
+#endif
+#ifndef PEAK_AM_START_MIN
+#define PEAK_AM_START_MIN (6 * 60 + 30)   // 06:30
+#endif
+#ifndef PEAK_AM_END_MIN
+#define PEAK_AM_END_MIN   (9 * 60 + 30)   // 09:30
+#endif
+#ifndef PEAK_PM_START_MIN
+#define PEAK_PM_START_MIN (16 * 60)       // 16:00
+#endif
+#ifndef PEAK_PM_END_MIN
+#define PEAK_PM_END_MIN   (19 * 60 + 30)  // 19:30
+#endif
+
 // Cached-GV (HS) Trip Planner result, persisted across deep sleep. Only
 // served to the picker when Centraal looks clean (no disruptions in the
 // next 5 trips) — any CTR disruption forces a fresh GV fetch so the
@@ -403,7 +424,7 @@ void setup() {
 
   wakeCounter++;
   DBGLN("Going to sleep...");
-  goToSleep(SLEEP_DURATION);
+  goToSleep(nextSleepSeconds());
 }
 
 void loop() {

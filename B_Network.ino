@@ -31,12 +31,34 @@ void initHardware() {
   }
 
 #ifdef WIFI_STATIC_IP
-  // If the static-IP attempt didn't associate, fall back to DHCP and retry
-  // once. Without this, a stale static IP (router subnet change, address
-  // collision, typo) leaves the firmware booting fine but never reaching
-  // WL_CONNECTED — app-level rollback can't help (no crash) AND OTA can't
-  // push a fix (no network). Recovery would require USB reflash.
-  if (WiFi.status() != WL_CONNECTED) {
+  // Fall back to DHCP and retry once if the static-IP attempt didn't produce
+  // a working network. Without this, a stale static IP (router subnet change,
+  // address collision, typo) leaves the firmware booting fine but with no
+  // usable network — app-level rollback can't help (no crash) AND OTA can't
+  // push a fix. Recovery would require USB reflash.
+  //
+  // Two distinct failure modes, and WL_CONNECTED only catches the first:
+  //   1. Association failed        → status != WL_CONNECTED. Obvious.
+  //   2. Associated, wrong subnet  → status == WL_CONNECTED immediately,
+  //      because a statically-configured stack never has to ask anyone for
+  //      an address. The AP is joined, the IP is set, and nothing is
+  //      reachable. This is what a router swap looks like, and checking
+  //      status alone sails straight past it into five failing fetches.
+  // So probe actual reachability: a DNS lookup has to traverse the gateway
+  // to the configured resolver, which is exactly the path a wrong subnet
+  // breaks. Cheap (one UDP round-trip on a healthy network) and it fails
+  // fast on a broken one. A transient DNS timeout costs one slower wake via
+  // an unnecessary DHCP retry — a fine trade against a silently dead device.
+  bool netUsable = (WiFi.status() == WL_CONNECTED);
+  if (netUsable) {
+    IPAddress probe;
+    if (WiFi.hostByName("pool.ntp.org", probe) != 1) {
+      DBGLN("WiFi: associated but DNS probe failed — static IP likely stale");
+      netUsable = false;
+    }
+  }
+
+  if (!netUsable) {
     DBGLN("WiFi: static-IP attempt failed, retrying with DHCP");
     WiFi.disconnect(true);
     WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
@@ -82,6 +104,40 @@ void initHardware() {
     DBG("NTP: skipped (last sync "); DBG(time(nullptr) - lastNtpSync);
     DBGLN("s ago)");
   }
+}
+
+// Wake cadence. WiFi-active time is ~92% of the daily energy budget and it
+// scales with wake count, so fewer wakes is the largest remaining lever
+// (see docs/power-audit.md §9 #9). A flat 30 min was rejected there because
+// it makes the 2 h rain nowcast up to 30 min stale — which matters only when
+// you're about to leave the house. So: keep 15 min across the commute
+// windows, halve the rate the rest of the day.
+//
+// Weekends stay at 15 min all day — no fixed commute to anchor the peaks to,
+// and the panel gets read at unpredictable times.
+//
+// Returns SLEEP_DURATION unchanged if the clock isn't readable. That is the
+// safe direction to fail: too-frequent wakes cost battery, too-long ones
+// leave a stale dashboard for hours.
+unsigned long nextSleepSeconds() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    DBGLN("Cadence: no clock, using default interval");
+    return SLEEP_DURATION;
+  }
+
+  // tm_wday: 0 = Sunday, 6 = Saturday.
+  if (timeinfo.tm_wday == 0 || timeinfo.tm_wday == 6) {
+    DBGLN("Cadence: weekend, peak interval");
+    return SLEEP_DURATION;
+  }
+
+  int nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+  bool peak = (nowMin >= PEAK_AM_START_MIN && nowMin < PEAK_AM_END_MIN) ||
+              (nowMin >= PEAK_PM_START_MIN && nowMin < PEAK_PM_END_MIN);
+
+  DBG("Cadence: weekday "); DBGLN(peak ? "peak" : "off-peak");
+  return peak ? SLEEP_DURATION : OFFPEAK_SLEEP_DURATION;
 }
 
 void handleNightMode() {

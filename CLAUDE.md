@@ -209,6 +209,12 @@ These were discovered during integration spikes and are not derivable from the c
 - `winddirectiondegrees` is exposed directly as an integer (0–360). `winddirection` (Dutch cardinal string) is only used as fallback.
 - `feeltemperature` is lowercase (not `feelTemperature`). Not used by the dashboard.
 
+**Home network topology (as of 2026-07-26 router swap):**
+- **The TP-Link Deco is the access point; a DrayTek Vigor is the router.** The Deco runs in AP/bridge mode behind the DrayTek, which owns DHCP on `192.168.1.0/24` (pool `.10`–`.209`, i.e. start `.10` + count 200). Previously the Deco routed on `192.168.68.0/22`. **Consequence for the Inkplate: SSID, password, band and WPA mode never changed** — same Deco radios — so `secrets.h` was untouched by the swap. Only the subnet moved. Any address reservation must be made on the DrayTek (`LAN` → `Bind IP to MAC`); reservations set in the Deco app do nothing in AP mode.
+- Device static IP is `192.168.1.220`, bound to MAC `10:97:BD:DA:4A:F4`, deliberately **outside** the DHCP pool.
+- **Don't validate a candidate static IP against the router's DHCP table alone.** `.200` was the first pick: it answered a ping, then went silent, and the DrayTek's table showed it free — an intermittent device (phone/tablet) held the lease and was away when the table was read. Pick from outside the pool and bind the MAC; that's robust to devices that come and go, which a table snapshot is not.
+- **The Inkplate is unreachable by ping ~98% of the time** (deep sleep, WiFi off, ~20 s awake per 15 min). A failed ping proves nothing. To confirm it holds its static IP, poll every ~10 s for a full wake interval, or read the DrayTek's ARP table.
+
 **CI / arduino-cli build gotchas:**
 - **FQBN for Inkplate6 is `Inkplate6V2`, NOT `Inkplate6`.** The Soldered "Inkplate_Boards:esp32" package contains both. The legacy `Inkplate6` entry has `build.board=ESP32_DEV` which fails to define the `ARDUINO_INKPLATE6` macro that the v11+ Inkplate library's `driverSelect.h` requires — compile dies with `#error "Board not selected!"`. The IDE's "Soldered Inkplate6" picker silently selects `Inkplate6V2` (which has `build.board=INKPLATE6V2` → defines `ARDUINO_INKPLATE6V2`). Lost ~1 hour to this in Phase 1.
 - **arduino-cli requires the sketch folder name to match the main `.ino` filename.** Repo checks out as `inkplate-dashboard/` but the main file is `Dashboard.ino`. CI workaround: copy sketch files into `sketch/Dashboard/` before invoking `arduino-cli compile`.

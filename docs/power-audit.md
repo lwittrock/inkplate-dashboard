@@ -1,5 +1,7 @@
 # Power-Usage Audit — Inkplate6V2 Dashboard
 
+> **STATUS — 2026-07-26: Adaptive wake cadence shipped (release `v2026.07.26-01`).** Recommendation §9 #9 ("30-min wakes") was rejected as a flat change but taken as a *conditional* one: weekday commute windows keep 15 min, the rest of the weekday runs at 30 min, weekends stay at 15 min all day. That preserves rain-nowcast freshness exactly when it's acted on. Wake count drops ~68 → ~47 on weekdays, ~53 averaged over a week. **Modelled daily draw ~30–34 → ~24–27 mAh/day; runtime projection ~37–40 days.** Same caveat as everything else here: modelled, not measured. `FULL_REFRESH_EVERY` 4→8 (#6) was evaluated the same day and **rejected** — ~0.3 mAh/day against ghosting accumulation on the Bayer-dithered rain chart. `DEBUG_LOG` (#4) confirmed off in the production `CONFIG_H` secret. Remaining unshipped: Tier 3 only (#7 TLS session reuse, #8 single weather source), both still poor effort/reward.
+>
 > **STATUS — 2026-05-26: All Tier 1 recommendations shipped.** Static IP (commit `fe7ef5e`), conditional GV trip fetch (commit `35b7a04`), and Open-Meteo split URLs + 6h daily cache (commit `6a67cbc`) are live in production. Modelled daily draw drops from ~42.5 mAh/day → **~30–34 mAh/day**; runtime projection **~28–34 days** (vs ~22 baseline). The audit below describes the **pre-Tier-1 baseline** — kept as historical reference. See §9 for which recommendations were taken.
 
 ---

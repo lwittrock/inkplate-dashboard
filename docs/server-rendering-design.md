@@ -361,14 +361,17 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    *Done when:* made-up reports from the laptop show up in HA and a made-up 6% battery reaches the
    phone. The `inkplate` check is the runbook's step 18, at the switch-over in step 5: a check
    that was never pinged does not alert.
-5. **Thin firmware.** On a branch, bench-tested over USB against CT 106 with `checkForUpdates()`
-   commented out for that flash (see `CLAUDE.md`). Test: normal wakes, stopping the service ("Server
-   down" on the second failure), a wrong SSID ("No Wi-Fi"), recovery, the OTA safety net.
-   Then update the `CONFIG_H` and `SECRETS_H` secrets, merge to master, and let the release build.
-   *Done when:* the morning after, the wall shows the server's screen and HA shows telemetry.
-6. **Clean up.** Rewrite `CLAUDE.md` for the thin client (the out-of-scope lines on remote logging
-   and battery monitoring change), update `README.md`, mark the handoff as superseded, add a status
-   note to `power-audit.md`. In the home-server repo: `reference.md` (CT 106, secrets, checks),
+5. **Thin firmware.** On the `thin-client` branch: written and compiled 23 September 2026
+   (1,113,605 bytes; the old firmware was 1,251,349), never run on the device. The bench test and
+   the release are a checklist of their own: [thin-client-switchover.md](thin-client-switchover.md).
+   Two bench-only switches make it safe and quick, `OTA_SKIP` and `BENCH_MAX_SLEEP_S`; CI refuses
+   to build a release with either. The `CONFIG_H` secret needs no change.
+   *Done when:* the morning after the release, the wall shows the server's screen and HA shows
+   telemetry.
+6. **Clean up.** `CLAUDE.md` is rewritten for the thin client on the `thin-client` branch (the
+   out-of-scope lines on remote logging and battery monitoring are changed there), and the handoff
+   is marked superseded. Left for then: `README.md`, and a status note in `power-audit.md` with the
+   measured figures. In the home-server repo: `reference.md` (CT 106, secrets, checks),
    the new runbook, `runbooks/home-assistant.md`, `decisions.md`, `plan.md`.
 7. **After a week or two of data:** recompute the battery table, then decide on the fast Wi-Fi
    reconnect and on the cadence.

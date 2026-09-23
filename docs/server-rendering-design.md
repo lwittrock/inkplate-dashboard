@@ -255,7 +255,9 @@ into the footer. It costs the device nothing. Where exactly it goes is layout wo
 
 ## The container: CT 106
 
-Modelled on CT 105; the build steps go into a runbook in the home-server repo.
+Modelled on CT 105. The build sheet is `runbooks/inkplate-screen.md` in the home-server repo
+(written 23 September 2026), with the reasons in its `decisions.md`, Appendix H. Where the two
+differ, the runbook is newer.
 
 - Debian 13, unprivileged, 1 core, **256 MB**, **3 GB** on `local-lvm`. Host RAM goes from about
   66% to about 68%.
@@ -263,7 +265,8 @@ Modelled on CT 105; the build steps go into a runbook in the home-server repo.
   `.210` to `.249` rule says).
 - No SSH server, unattended-upgrades, no Docker. It does not need to move to the apps VM later.
 - `106.fw`:
-  - **inbound:** TCP 8088 from `192.168.1.220` and from the `management` set only
+  - **inbound:** TCP 8088 from the LAN (`192.168.1.0/24`, which admits Tailscale too): the
+    Inkplate, and previews from the laptop, which has no fixed address
   - **outbound:** TCP 443 to the internet (APIs, GitHub, healthchecks.io); to the LAN only HA on
     `192.168.1.18:80`
 - Secrets in `/etc/inkplate-screen.env`, root-only: NS API key, HA webhook id, healthchecks.io
@@ -271,11 +274,12 @@ Modelled on CT 105; the build steps go into a runbook in the home-server repo.
   Pass.
 - Service user `screen`, systemd unit sandboxed like the CT 102 jobs (`ProtectSystem=strict`,
   writes only to its own state folder).
-- Monitoring: healthchecks.io check `screen-render` (pinged after every render, period 5 min,
-  grace 15 min), `inkplate` (above), and possibly one for deploys. That brings the free plan to 8
-  or 9 of 20. Optionally an Uptime Kuma HTTP monitor on `/preview.png`.
-- Backups: the service holds no data that git does not have, apart from the env file (in Proton
-  Pass) and the last telemetry file. Adding it to the `infra` vzdump job is cheap but optional.
+- Monitoring: three healthchecks.io checks, 9 of the free plan's 20: `screen-render` (pinged by
+  the render loop every 5 minutes, grace 15), `screen-deploy` (every deploy run, grace 1 hour; a
+  failed self-test pings `/fail` at once), and `inkplate` (above). No Uptime Kuma monitor:
+  `screen-render` already goes quiet when the service dies.
+- Backups: none. The service holds nothing git and Proton Pass do not have, apart from the last
+  device report, which the next wake refills.
 
 ## Deploying: the container pulls
 
@@ -288,9 +292,14 @@ The repo is public, so the container fetches over HTTPS with no key.
   2. Create a venv and install with `pip install --require-hashes`.
   3. Run the self-test: render a frame from the fixtures and check it is 60,000 bytes. On
      failure, stop and keep the current release.
-  4. Point the `current` symlink at the new release. A systemd path unit watching the symlink
-     restarts the service, so the deploy user needs no root rights.
+  4. Point the `current` symlink at the new release and rewrite `/opt/inkplate-screen/deployed`.
+     A systemd path unit watching that file restarts the service, so the deploy user needs no
+     root rights.
   5. Keep the last three releases.
+- `deploy.sh` and the unit files (`server/deploy/`) are installed by hand, so a push can change the
+  service but not how it is deployed. Tested 23 September 2026 in a Debian 13 container: first
+  deploy, no change, a change, a change failing the self-test, a revert, pruning. The path unit
+  restarting the service is tested only on the real container (runbook step 11).
 - **Rollback:** `git revert` on master, which deploys like any change. By hand: point `current`
   at an older release.
 - **Trust:** the server runs whatever reaches `master` of `lwittrock/inkplate-dashboard`. Only
@@ -342,14 +351,16 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    **Done 23 September 2026:** `server/screen/service.py`; checked with live APIs and a dummy
    webhook, and at a simulated 00:05 (204, one OTA hint, sleep to 06:30:30). The schedule tests
    sweep every minute of a week and both clock changes.
-3. **CT 106.** Build it from a new runbook in the home-server repo, with the deploy timer and both
-   checks.
+3. **CT 106.** The home-server repo's `runbooks/inkplate-screen.md`, steps 0 to 12, after
+   merging this branch into `master` (its Phase 10.1). **Prepared 23 September 2026:** the deploy
+   script, the units, the self-test and hash-pinned requirements are in `server/`.
    *Done when:* a push to `server/` appears on the container by itself, `screen-render` is green
    for a week, and `/preview.png` opens from the laptop.
-4. **Home Assistant.** Webhook automation, sensors, low-battery notification, `inkplate` check.
-   *Done when:* a request from the laptop with made-up values shows up in HA, and a made-up 10%
-   battery reaches the phone. Create the `inkplate` check, then pause it: healthchecks.io
-   resumes a paused check on its next ping, which will be the device's first request in step 5.
+4. **Home Assistant.** The runbook's steps 13 to 17: seven sensors from the webhook (battery,
+   voltage, signal, awake and Wi-Fi times, firmware, last seen) and a notification below 15%.
+   *Done when:* made-up reports from the laptop show up in HA and a made-up 6% battery reaches the
+   phone. The `inkplate` check is the runbook's step 18, at the switch-over in step 5: a check
+   that was never pinged does not alert.
 5. **Thin firmware.** On a branch, bench-tested over USB against CT 106 with `checkForUpdates()`
    commented out for that flash (see `CLAUDE.md`). Test: normal wakes, stopping the service ("Server
    down" on the second failure), a wrong SSID ("No Wi-Fi"), recovery, the OTA safety net.

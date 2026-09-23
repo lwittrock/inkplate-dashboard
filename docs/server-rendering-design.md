@@ -381,8 +381,8 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    telemetry.
 6. **Clean up.** `CLAUDE.md` is rewritten for the thin client on the `thin-client` branch (the
    out-of-scope lines on remote logging and battery monitoring are changed there), and the handoff
-   is marked superseded. Left for then: `README.md`, and a status note in `power-audit.md` with the
-   measured figures. In the home-server repo: `reference.md` (CT 106, secrets, checks),
+   is marked superseded; `README.md` is rewritten with a map of which document owns which fact.
+   Left for then: a status note in `power-audit.md` with the measured figures. In the home-server repo: `reference.md` (CT 106, secrets, checks),
    the new runbook, `runbooks/home-assistant.md`, `decisions.md`, `plan.md`.
 7. **After a week or two of data:** recompute the battery table, then decide on the fast Wi-Fi
    reconnect and on the cadence.

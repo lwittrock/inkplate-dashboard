@@ -1,39 +1,10 @@
 from datetime import datetime
 
 import pytest
+from PIL import Image
 
-from screen import gfx
-from screen.gfx import BLACK, Canvas
+from screen import frames, render
 from screen.model import Category, Departure, DayForecast, RainSample, Snapshot, Transfer, WeatherNow
-from screen.render import render
-
-
-def test_frame_format():
-    c = Canvas()
-    c.pixel(0, 0)
-    c.pixel(799, 599)
-    frame = c.to_frame()
-    assert len(frame) == 60_000
-    assert frame[0] == 0x80 and frame[-1] == 0x01 and frame[1] == 0
-
-
-def test_line_and_circle_match_adafruit():
-    c = Canvas()
-    c.line(0, 0, 4, 2)
-    assert [(x, y) for y in range(3) for x in range(5) if c.px[y * 800 + x]] == \
-        [(0, 0), (1, 0), (2, 1), (3, 1), (4, 2)]
-    c = Canvas()
-    c.fill_circle(10, 10, 2)
-    rows = ["".join("#" if c.px[y * 800 + x] else "." for x in range(8, 13)) for y in range(8, 13)]
-    assert rows == [".###.", "#####", "#####", "#####", ".###."]
-
-
-def test_text_bounds_follow_the_glyph_table():
-    c = Canvas()
-    c.set_font("Inter_Bold9pt7b")
-    _, w, h, xa, xo, yo = gfx.font("Inter_Bold9pt7b").glyphs[ord("H") - 32]
-    assert c.text_bounds("H", 100, 50) == (100 + xo, 50 + yo, w, h)
-    assert c.text_width("HH") - c.text_width("H") == xa
 
 
 def dep(origin, time, arr, **kw):
@@ -55,7 +26,8 @@ def busy_snapshot(hour=17):
             for i in range(24)]
     return Snapshot(
         now=datetime(2026, 9, 23, hour, 5),
-        weather=WeatherNow(temp=-3.7, wind_kmh=42.4, category=Category.RAIN_HEAVY, wind_bearing=225),
+        weather=WeatherNow(temp=-3.7, wind_kmh=42.4, category=Category.RAIN_HEAVY, wind_bearing=225,
+                           feels=-8.1, gust_kmh=61.0),
         rain=rain, hourly=[12 - abs(12 - i) * 0.4 for i in range(24)], forecast=days,
         departures=[dep("CTR", "17:10", "18:20", delay=12, transfer=Transfer.LATE),
                     dep("HS", "17:14", "18:12", track="12"),
@@ -63,23 +35,39 @@ def busy_snapshot(hour=17):
         battery_v=3.9, firmware="v2026.10.02-01")
 
 
-@pytest.mark.parametrize("hour", [9, 21])
-def test_every_section_renders_into_a_frame(hour):
-    frame = render(busy_snapshot(hour)).to_frame()
-    assert len(frame) == 60_000
+@pytest.mark.parametrize("hour", [5, 9, 21])
+def test_every_section_renders_in_both_panel_modes(hour):
+    snap = busy_snapshot(hour)
+    grey = render.render_grey(snap)
+    crisp = render.render_grey(snap, crisp_small=True)
+    mono = render.render_mono(snap)
+    assert grey.size == crisp.size == mono.size == (800, 600)
+    panel_levels = {round(i * 255 / 7) for i in range(8)}
+    assert set(grey.getdata()) <= panel_levels and set(crisp.getdata()) <= panel_levels
+    assert mono.mode == "1"
+    assert len(frames.pack_grey(grey)) == frames.GREY_BYTES
+    assert len(frames.pack_mono(mono)) == frames.MONO_BYTES
 
 
 def test_empty_snapshot_renders_the_fallbacks():
-    c = render(Snapshot(now=datetime(2026, 9, 23, 12, 0)))
-    assert len(c.to_frame()) == 60_000
-    assert any(c.px)
+    img = render.render_grey(Snapshot(now=datetime(2026, 9, 23, 12, 0)))
+    assert min(img.getdata()) == 0      # something was drawn
 
 
-def test_second_design_renders_in_both_panel_modes():
-    from screen import render2
-    for snap in (busy_snapshot(9), busy_snapshot(21), Snapshot(now=datetime(2026, 9, 23, 12, 0))):
-        grey = render2.render_grey(snap)
-        mono = render2.render_mono(snap)
-        assert grey.size == mono.size == (800, 600)
-        assert set(grey.getdata()) <= {round(i * 255 / 7) for i in range(8)}   # the panel's 8 levels
-        assert mono.mode == "1"
+def test_frame_packing():
+    mono = Image.new("1", (800, 600), 1)
+    mono.putpixel((0, 0), 0)
+    mono.putpixel((799, 599), 0)
+    packed = frames.pack_mono(mono)
+    assert packed[0] == 0x80 and packed[-1] == 0x01 and packed[1] == 0     # 1 = black, MSB first
+    grey = Image.new("L", (800, 600), 255)
+    grey.putpixel((0, 0), 0)
+    grey.putpixel((1, 0), round(3 * 255 / 7))
+    assert frames.pack_grey(grey)[:2] == bytes([0x03, 0x77])               # left pixel in the high nibble
+
+
+def test_night_before_sunrise_and_after_sunset():
+    fc = busy_snapshot().forecast
+    assert render.is_night(Snapshot(now=datetime(2026, 9, 23, 6, 40), forecast=fc))
+    assert not render.is_night(Snapshot(now=datetime(2026, 9, 23, 12, 0), forecast=fc))
+    assert render.is_night(Snapshot(now=datetime(2026, 9, 23, 19, 40), forecast=fc))

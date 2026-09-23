@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from screen.gfx import Canvas
 from screen.headline import DAYS, greeting
 from screen.model import Category, DayForecast, Station
+from screen.render import Canvas
 from screen.weather import category_from_icon, daily_category, pick_current
 
 HOME = (52.0799, 4.3133)
@@ -101,8 +101,8 @@ def test_rainy_day_clearing_up_in_the_evening_takes_current_conditions():
 
 
 def test_every_greeting_fits_left_of_the_sun_arc():
-    c = Canvas()
-    c.set_font("Inter_Bold18pt7b")
+    c = Canvas(mono=False)
+    width = lambda s: c.width(s, 34, 650)       # the masthead's greeting type
     longest = max([f"Wet and windy {d}" for d in DAYS] + [f"Glorious {d}" for d in DAYS]
-                  + ["Second Day of Christmas"], key=c.text_width)
-    assert c.text_width(longest) <= 564   # x=40 to the arc at x=620, minus 16 px
+                  + ["Second Day of Christmas"], key=width)
+    assert width(longest) <= 540   # x=40 to the arc's left end at x=598, minus 18 px

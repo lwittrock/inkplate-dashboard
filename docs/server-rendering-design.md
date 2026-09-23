@@ -245,14 +245,12 @@ are the specification:
 - Test fixtures: recorded API responses (including a disrupted NS day, if one can be caught) so
   renders are reproducible offline.
 
-**Fonts and drawing (changed 23 September, while building step 1):** instead of drawing Inter TTF
-with Pillow, which would only approximate the GFX sizes, `server/tools/import_gfx_assets.py`
-imports the firmware's own GFX font headers and `icons.h` into `server/screen/assets/`, and
-`server/screen/gfx.py` reproduces Adafruit GFX's drawing routines with the same integer
-arithmetic. Same input, same pixels, which makes the port checkable against the wall. New sizes
-or fonts for a later redesign can still come from TTF alongside.
-Keep `server/` free of `.h` and `.ino` files: CI's path filter would build a firmware release for
-every server change.
+**Fonts and drawing.** For the exact port (23 September, step 1), the firmware's own GFX fonts and
+icons were imported and Adafruit GFX's drawing routines reproduced, so the port could be checked
+against the wall pixel for pixel; it matched. **Since 24 September** the screen is the redesign
+(`server/screen/render.py`): Inter as a variable TTF at any size and Material Symbols weather
+icons, drawn for the panel's greyscale and 1-bit modes. The exact port was removed then and is in
+git history (commit `c9a36d2`).
 
 **Laptop preview:** `python -m screen.preview` renders from live APIs or from fixtures into a PNG,
 enlarged 2x for viewing. This is the design loop: change, preview in seconds, push.
@@ -288,10 +286,11 @@ the schedule policy below:
 Because the service does the pinging, a dead server also makes this check go quiet, alongside the
 server's own checks. That's acceptable: either way the screen is not updating.
 
-### Status line (option C)
+### Status line (option C): declined
 
-The service reads healthchecks.io's API (read-only key) and draws "server OK" or "N problems"
-into the footer. It costs the device nothing. Where exactly it goes is layout work for the port.
+Planned as "server OK" or "N problems" in the footer, from healthchecks.io's API. **Declined by
+Lars on 24 September 2026:** not needed on the wall, since healthchecks.io and HA already alert
+by themselves.
 
 ## The container: CT 106
 
@@ -402,6 +401,10 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
 - **Skipping unchanged frames:** the device sends a hash of its last frame, the service answers
   "unchanged", and the device skips download and refresh. That would save about 20% of a wake,
   but in the daytime the frame almost always changes (departures, the "updated" time).
+- **A sun-with-showers icon.** Material Symbols has no sun-and-rain glyph, so days the forecast
+  marks as sunny with showers show the plain rain icon in the week strip (the firmware's bitmap set
+  had one). To solve later: compose one from `partly_cloudy_day` and `rainy`, or take a glyph from
+  another open icon set.
 - **"Buienradar and NS in HA"** from the home-server ideas list: the service already has the data
   and could expose it to HA as JSON.
 

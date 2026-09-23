@@ -11,10 +11,8 @@ the laptop). Next is step 3: the container on the home server and the deploy.
 
 | Path | What |
 |---|---|
-| `screen/gfx.py` | 1-bit canvas that draws exactly like Adafruit GFX on the device |
-| `screen/render2.py` | **The design**: Inter at any size, Material Symbols icons, for the greyscale and the 1-bit panel mode |
+| `screen/render.py` | **The design**: the layout, drawn for the greyscale and the 1-bit panel mode |
 | `screen/frames.py` | The wire formats (`g4z` greyscale, `m1z` 1-bit, both zlib) and which one a device gets |
-| `screen/render.py` | The first design, the exact port of `C_Display.ino`; kept for comparison (`preview --old`) |
 | `screen/sources.py` | The four APIs: fetch raw bodies, parse them as the firmware did |
 | `screen/collect.py` | Per-source cache and refresh rules, produces a `Snapshot` |
 | `screen/trains.py`, `weather.py`, `headline.py` | Picker, station vote, daily categories, greeting |
@@ -22,7 +20,9 @@ the laptop). Next is step 3: the container on the home server and the deploy.
 | `screen/service.py` | The HTTP service: render loop, `/v1/screen`, `/preview.png`, `/status` |
 | `screen/schedule.py` | When the device wakes next, OTA hint, 200 or 204, full or partial refresh |
 | `screen/telemetry.py` | The device's report: parsing, `state.json`, forwarding to HA and healthchecks.io |
-| `screen/assets/` | Fonts and icons imported from the firmware (`tools/import_gfx_assets.py`) |
+| `screen/assets/ttf/` | Inter (OFL, variable) and the Material Symbols weather subset (Apache 2.0), with their licences |
+| `tools/subset_icons.py` | Rebuilds the icon subset from Google's font, byte for byte |
+| `tools/mockups.py` | The screen in its three looks side by side, from a fixture and a synthetic rainy morning |
 | `screen/selftest.py` | The gate a deploy must pass: renders the fixtures, checks the frame and schedule |
 | `deploy/` | CT 106: `deploy.sh` and the systemd units (installed by hand, see below) |
 | `tests/` | Unit tests; `tests/fixtures/<name>/` holds recorded API responses |
@@ -63,13 +63,12 @@ breaks collection; run the tests with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` set.
 ## Relation to the firmware
 
 **The port matched the wall on 23 September 2026** (commit `c9a36d2`), down to
-a firmware bug that left one train card in the evening. Drawing still follows
-the firmware pixel for pixel: its own GFX fonts and bitmaps, Adafruit GFX's
-integer algorithms, and single precision where the firmware's float rounding
-decides pixels (small-caps spacing, the sun arc). Elsewhere double precision
-can move a pixel in rare cases.
+a firmware bug that left one train card in the evening: it drew with the
+firmware's own GFX fonts and bitmaps and Adafruit GFX's integer algorithms.
+That exact port did its job and was removed on 24 September 2026, when the
+redesign became the only renderer; it is in git history if ever needed.
 
-Changed on purpose since then:
+Changed on purpose since then, besides the redesign:
 
 1. **Trains compare full timestamps.** The firmware compared "HH:MM" text, so
    a train arriving after midnight (22:49, arriving 00:10) "beat" every

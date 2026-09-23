@@ -120,4 +120,6 @@ Each fact has one home; the others point to it.
 ## License
 
 Code: MIT, see [LICENSE](LICENSE). Inter font files: SIL Open Font License 1.1, see
-[Fonts/OFL.txt](Fonts/OFL.txt) and [server/screen/assets/fonts/OFL.txt](server/screen/assets/fonts/OFL.txt).
+[Fonts/OFL.txt](Fonts/OFL.txt) and [server/screen/assets/ttf/OFL.txt](server/screen/assets/ttf/OFL.txt).
+Material Symbols (the weather icons): Apache 2.0, see
+[server/screen/assets/ttf/LICENSE-MaterialSymbols.txt](server/screen/assets/ttf/LICENSE-MaterialSymbols.txt).

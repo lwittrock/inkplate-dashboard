@@ -6,8 +6,8 @@
     python -m screen.preview --fixture NAME --at 2026-09-23T17:40
 
 Settings come from the environment and server/local.env (NS_API_KEY,
-LATITUDE, LONGITUDE, ...). Draws the current design in greyscale; --mono for
-the 1-bit panel mode, --old for the original port of the firmware's design.
+LATITUDE, LONGITUDE, ...). Draws the screen in greyscale; --crisp for crisp
+small text, --mono for the 1-bit panel mode.
 Output: preview.png, enlarged 2x for viewing, and frame.bin, the frame the
 device would receive (uncompressed).
 """
@@ -21,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from PIL import Image
 
-from . import frames, render, render2
+from . import frames, render
 from .collect import Collector
 from .config import SERVER_DIR, Settings, load_env_file
 from .sources import FixtureFetcher, LiveFetcher, RecordingFetcher
@@ -45,8 +45,7 @@ def main() -> None:
     ap.add_argument("--scale", type=int, default=2)
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--mono", action="store_true", help="the 1-bit panel mode")
-    mode.add_argument("--old", action="store_true", help="the first design, ported from the firmware")
-    ap.add_argument("--crisp", action="store_true", help="greyscale with crisp small text")
+    mode.add_argument("--crisp", action="store_true", help="greyscale with crisp small text")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -71,14 +70,11 @@ def main() -> None:
 
     snap = Collector(settings, fetcher).snapshot(now)
     snap.battery_v = args.battery
-    if args.old:
-        canvas = render.render(snap)
-        img, frame = canvas.to_image(), canvas.to_frame()
-    elif args.mono:
-        img = render2.render_mono(snap)
+    if args.mono:
+        img = render.render_mono(snap)
         frame = frames.pack_mono(img)
     else:
-        img = render2.render_grey(snap, crisp_small=args.crisp)
+        img = render.render_grey(snap, crisp_small=args.crisp)
         frame = frames.pack_grey(img)
 
     if args.scale > 1:

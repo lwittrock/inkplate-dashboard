@@ -189,6 +189,8 @@ def parse_br_stations(doc: dict) -> list[Station]:
             temp=num(s.get("temperature")),
             wind_ms=num(s.get("windspeed")),
             bearing=int(bearing),
+            feels=num(s.get("feeltemperature"), None),
+            gust_ms=num(s.get("windgusts"), None),
         ))
     return out
 

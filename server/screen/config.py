@@ -37,6 +37,7 @@ class Settings:
     buienradar_consensus_km: float
     buienradar_max_candidates: int
     show_version_footer: bool
+    screen_format: str          # "grey" or "mono": what to send a device that can draw both
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -52,4 +53,5 @@ class Settings:
             buienradar_consensus_km=float(e("BUIENRADAR_CONSENSUS_KM", "30")),
             buienradar_max_candidates=int(e("BUIENRADAR_MAX_CANDIDATES", "6")),
             show_version_footer=e("SHOW_VERSION_FOOTER", "0") == "1",
+            screen_format="mono" if e("SCREEN_FORMAT", "grey").strip().lower() == "mono" else "grey",
         )

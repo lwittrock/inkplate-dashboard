@@ -67,10 +67,11 @@ backward-compatible way: the service deploys within minutes of a push, the devic
 midnight, so for a night both versions of the other side must work. A breaking change gets a new
 path (`/v2/screen`) and the service serves both until the device has moved.
 
-**Request:** `GET http://192.168.1.212:8088/v1/screen?batt=3.91&fw=v2026.10.02-01&rssi=-61&wake=812&fail=0&awake_ms=2140&wifi_ms=1310`
+**Request:** `GET http://192.168.1.212:8088/v1/screen?fmt=g4z,m1z&batt=3.91&fw=v2026.10.02-01&rssi=-61&wake=812&fail=0&awake_ms=2140&wifi_ms=1310`
 
 | Parameter | Meaning |
 |---|---|
+| `fmt` | The frame formats the device can draw, comma-separated (below). The service picks one |
 | `batt` | Battery voltage, two decimals, from `display.readBattery()` |
 | `fw` | `FIRMWARE_VERSION` |
 | `rssi` | `WiFi.RSSI()` |
@@ -78,15 +79,33 @@ path (`/v2/screen`) and the service serves both until the device has moved.
 | `fail` | Consecutive failed wakes before this one (0 normally) |
 | `awake_ms`, `wifi_ms` | Previous wake's total active time and Wi-Fi connect time, kept in RTC. This is what turns the battery model into measurements |
 
-**Reply, success:** status 200, body exactly **60,000 bytes**: 600 rows of 100 bytes, most
-significant bit first, **1 = black**. This is the order Adafruit GFX's `drawBitmap` reads. Note that
-Pillow's mode `"1"` uses 1 = white, so the service inverts before sending.
+**Frame formats** (added 24 September 2026; the service's `SCREEN_FORMAT` setting, `grey` by
+default, decides between them; [server/screen/frames.py](../server/screen/frames.py)):
+
+| `X-Format` | Frame | Decompressed | Typical on the wire |
+|---|---|---|---|
+| `g4z` | greyscale: 4 bits per pixel, two per byte, left pixel in the high nibble, levels 0 (black) to 7 (white). Exactly the Inkplate library's 3-bit buffer, `DMemory4Bit` | 240,000 bytes | ~14 KB |
+| `m1z` | 1-bit: 600 rows of 100 bytes, MSB first, 1 = black | 60,000 bytes | ~7 KB |
+| (none) | a request without `fmt`: the same 1-bit frame, raw, the contract's first form | | 60,000 bytes |
+
+`g4z` and `m1z` are zlib streams (header and Adler-32 checksum), which the ESP32's ROM decompresses
+(`tinfl_decompress`). The device checks the decompressed length is exact.
+
+**Reply, success:** status 200, the frame in the format named by `X-Format`.
 
 | Header | Meaning | Device handling |
 |---|---|---|
 | `X-Sleep` | Seconds until the next wake | Clamped to 300..28,800. Missing or invalid: 1,800 |
-| `X-Refresh` | `full` or `partial` | Missing: `full`. Today every refresh is full: see below |
+| `X-Format` | `g4z` or `m1z` | Selects the panel mode: greyscale is always a full refresh |
+| `X-Refresh` | `full` or `partial` | 1-bit only. Today every refresh is full: see below |
 | `X-Ota` | `1` = check the OTA manifest now | Optional hint; the device has its own trigger too |
+
+**Why greyscale costs about the same as 1-bit** (worked out 24 September 2026 from the library
+code): both refreshes start with the same 77-scan cleaning run, then 1-bit draws in 6 scans and
+greyscale in 9, so the greyscale refresh is about 4% longer. The compressed greyscale frame (~14 KB)
+is smaller than the raw 1-bit frame the first contract sent (60 KB), so radio time goes down. What
+greyscale rules out is a real partial refresh, which the panel only does in 1-bit: switching back is
+`SCREEN_FORMAT=mono` on the service, no firmware change.
 
 **Reply, keep the panel:** status 204, no body, with `X-Sleep` and possibly `X-Ota`. A success: the
 device resets its failure count, skips drawing, and sleeps. The service sends it at night (23:30
@@ -94,8 +113,9 @@ to 06:30), so the 00:05 OTA wake does not replace the evening's screen with a mi
 device reporting `fail > 0` gets a 200 even at night, so a "Server down" screen clears at once.
 (Added 23 September while building step 2.)
 
-**Anything else is a failure:** another status, a body that is not exactly 60,000 bytes, a
-connect over 2 s, or a total over 5 s. A short body must never reach the panel.
+**Anything else is a failure:** another status, an unknown `X-Format`, a body that does not
+decompress to exactly the format's size, a connect over 2 s, or a total over 5 s. A damaged frame
+must never reach the panel.
 
 ## The device
 

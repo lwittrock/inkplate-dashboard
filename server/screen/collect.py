@@ -86,8 +86,10 @@ class Collector:
 
         snap.rain = self._get("br_rain", now) or []
 
-        ctr = trains.filter_dominated(self._get("ns_ctr", now) or [])
+        raw_ctr = self._get("ns_ctr", now) or []
+        ctr = trains.filter_dominated(raw_ctr)
         disrupted = trains.ctr_has_disruption(ctr)
         hs = self._get("ns_hs", now, force=disrupted)
         snap.departures = trains.pick_departures(ctr, trains.filter_dominated(hs or []), now)
+        snap.trains_ok = bool(raw_ctr or hs)
         return snap

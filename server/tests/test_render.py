@@ -73,3 +73,13 @@ def test_empty_snapshot_renders_the_fallbacks():
     c = render(Snapshot(now=datetime(2026, 9, 23, 12, 0)))
     assert len(c.to_frame()) == 60_000
     assert any(c.px)
+
+
+def test_second_design_renders_in_both_panel_modes():
+    from screen import render2
+    for snap in (busy_snapshot(9), busy_snapshot(21), Snapshot(now=datetime(2026, 9, 23, 12, 0))):
+        grey = render2.render_grey(snap)
+        mono = render2.render_mono(snap)
+        assert grey.size == mono.size == (800, 600)
+        assert set(grey.getdata()) <= {round(i * 255 / 7) for i in range(8)}   # the panel's 8 levels
+        assert mono.mode == "1"

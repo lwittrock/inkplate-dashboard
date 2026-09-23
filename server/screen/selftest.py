@@ -3,31 +3,34 @@
     python -m screen.selftest
 
 Uses only what the server has (Pillow, no pytest, no network): renders every
-recorded fixture and a synthetic screen that exercises every section, checks
-the frame format, and asks the schedule for a whole week of wakes. Exit code
+recorded fixture and a synthetic screen that exercises every section in both
+panel modes, checks every wire format survives compression at its exact size,
+and asks the schedule for a whole week of wakes. Exit code
 0 means the release may be switched to; anything else keeps the old one.
 """
 
 import json
 import sys
+import zlib
 from datetime import datetime, timedelta
 
+from . import frames, render2
 from .collect import Collector
 from .config import SERVER_DIR, Settings
 from .model import (Category, Departure, DayForecast, RainSample, Snapshot, Transfer,
                     WeatherNow)
-from .render import render
 from .schedule import plan
 from .sources import FixtureFetcher
 
-FRAME_BYTES = 60_000
-
 
 def _check_frame(name: str, snap: Snapshot) -> None:
-    frame = render(snap).to_frame()
-    if len(frame) != FRAME_BYTES:
-        raise AssertionError(f"{name}: frame is {len(frame)} bytes")
-    if not any(frame):
+    for fmt, raw, size in (("g4z", frames.pack_grey(render2.render_grey(snap)), frames.GREY_BYTES),
+                           ("m1z", frames.pack_mono(render2.render_mono(snap)), frames.MONO_BYTES)):
+        if len(raw) != size:
+            raise AssertionError(f"{name} {fmt}: frame is {len(raw)} bytes, not {size}")
+        if zlib.decompress(frames.compress(raw)) != raw:
+            raise AssertionError(f"{name} {fmt}: compression does not round-trip")
+    if not any(frames.pack_mono(render2.render_mono(snap))):
         raise AssertionError(f"{name}: frame is blank")
 
 

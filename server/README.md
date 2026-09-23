@@ -12,7 +12,9 @@ the laptop). Next is step 3: the container on the home server and the deploy.
 | Path | What |
 |---|---|
 | `screen/gfx.py` | 1-bit canvas that draws exactly like Adafruit GFX on the device |
-| `screen/render.py` | The layout, ported section by section from `C_Display.ino` |
+| `screen/render2.py` | **The design**: Inter at any size, Material Symbols icons, for the greyscale and the 1-bit panel mode |
+| `screen/frames.py` | The wire formats (`g4z` greyscale, `m1z` 1-bit, both zlib) and which one a device gets |
+| `screen/render.py` | The first design, the exact port of `C_Display.ino`; kept for comparison (`preview --old`) |
 | `screen/sources.py` | The four APIs: fetch raw bodies, parse them as the firmware did |
 | `screen/collect.py` | Per-source cache and refresh rules, produces a `Snapshot` |
 | `screen/trains.py`, `weather.py`, `headline.py` | Picker, station vote, daily categories, greeting |

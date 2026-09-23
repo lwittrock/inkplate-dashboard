@@ -6,8 +6,10 @@
     python -m screen.preview --fixture NAME --at 2026-09-23T17:40
 
 Settings come from the environment and server/local.env (NS_API_KEY,
-LATITUDE, LONGITUDE, ...). Output: preview.png, enlarged 2x for viewing,
-and frame.bin, the 60,000 bytes the device would receive.
+LATITUDE, LONGITUDE, ...). Draws the current design in greyscale; --mono for
+the 1-bit panel mode, --old for the original port of the firmware's design.
+Output: preview.png, enlarged 2x for viewing, and frame.bin, the frame the
+device would receive (uncompressed).
 """
 
 import argparse
@@ -17,9 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from PIL import Image
+
+from . import frames, render, render2
 from .collect import Collector
 from .config import SERVER_DIR, Settings, load_env_file
-from .render import render
 from .sources import FixtureFetcher, LiveFetcher, RecordingFetcher
 
 FIXTURES = SERVER_DIR / "tests" / "fixtures"
@@ -39,6 +43,9 @@ def main() -> None:
     ap.add_argument("--battery", type=float, help="battery voltage to show in the footer")
     ap.add_argument("--out", type=Path, default=SERVER_DIR / "preview.png")
     ap.add_argument("--scale", type=int, default=2)
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--mono", action="store_true", help="the 1-bit panel mode")
+    mode.add_argument("--old", action="store_true", help="the first design, ported from the firmware")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -63,13 +70,20 @@ def main() -> None:
 
     snap = Collector(settings, fetcher).snapshot(now)
     snap.battery_v = args.battery
-    canvas = render(snap)
+    if args.old:
+        canvas = render.render(snap)
+        img, frame = canvas.to_image(), canvas.to_frame()
+    elif args.mono:
+        img = render2.render_mono(snap)
+        frame = frames.pack_mono(img)
+    else:
+        img = render2.render_grey(snap)
+        frame = frames.pack_grey(img)
 
-    img = canvas.to_image()
     if args.scale > 1:
-        img = img.resize((img.width * args.scale, img.height * args.scale))
+        img = img.resize((img.width * args.scale, img.height * args.scale), Image.NEAREST)
     img.save(args.out)
-    args.out.with_name("frame.bin").write_bytes(canvas.to_frame())
+    args.out.with_name("frame.bin").write_bytes(frame)
     print(f"{args.out} ({now:%Y-%m-%d %H:%M}, {len(snap.departures)} departures, "
           f"weather {'ok' if snap.weather else 'missing'}, "
           f"{len(snap.forecast)} days, {len(snap.hourly)} hours, {len(snap.rain)} rain samples)")

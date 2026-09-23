@@ -1,10 +1,12 @@
 """The service end to end: a real HTTP server on a free port, the wall1
 fixture as the upstream APIs, a settable clock, and a fake forwarder."""
 
+import dataclasses
 import json
 import threading
 import urllib.error
 import urllib.request
+import zlib
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -113,3 +115,25 @@ def test_battery_percent_follows_the_lipo_curve():
     assert battery_percent(3.86) in (57, 58)
     assert battery_percent(3.0) == 0
     assert battery_percent(None) is None and battery_percent(0.0) is None
+
+
+def test_the_device_gets_greyscale_when_it_offers_it(svc):
+    _, _, get, _, _ = svc
+    status, headers, body = get("/v1/screen?fmt=g4z,m1z&fw=a&wake=1")
+    assert (status, headers["X-Format"]) == (200, "g4z")
+    frame = zlib.decompress(body)
+    assert len(frame) == 240_000 and len(body) < 40_000
+    assert max(b >> 4 for b in frame) <= 7 and max(b & 15 for b in frame) <= 7   # levels 0..7 only
+
+
+def test_screen_format_mono_sends_compressed_1_bit(svc):
+    service, _, get, _, _ = svc
+    service.settings = dataclasses.replace(service.settings, screen_format="mono")
+    status, headers, body = get("/v1/screen?fmt=g4z,m1z&fw=a&wake=1")
+    assert (headers["X-Format"], len(zlib.decompress(body))) == ("m1z", 60_000)
+
+
+def test_a_request_without_fmt_still_gets_the_raw_frame(svc):
+    _, _, get, _, _ = svc
+    status, headers, body = get("/v1/screen?fw=a&wake=1")
+    assert "X-Format" not in headers and len(body) == 60_000

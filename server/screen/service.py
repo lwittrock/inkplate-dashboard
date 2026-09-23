@@ -5,9 +5,10 @@
     python -m screen.service --at 2026-09-23T23:20 # pretend it is that time (clock runs on)
 
 Endpoints:
-    GET /v1/screen?batt=..&fw=..&rssi=..&wake=..&fail=..&awake_ms=..&wifi_ms=..
-        200 + 60,000-byte frame, or 204 at night (keep the panel, just sleep).
-        Headers: X-Sleep (seconds), X-Refresh (full|partial), X-Ota (1 = check now).
+    GET /v1/screen?fmt=g4z,m1z&batt=..&fw=..&rssi=..&wake=..&fail=..&awake_ms=..&wifi_ms=..
+        200 + a frame in the format named by X-Format (see frames.py), or 204
+        at night (keep the panel, just sleep).
+        Headers: X-Sleep (seconds), X-Format, X-Refresh (full|partial), X-Ota (1 = check now).
     GET /preview.png   the current frame, for a browser on the laptop
     GET /status        last render and last device report, as JSON
 
@@ -29,10 +30,9 @@ from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-from . import schedule
+from . import frames, render2, schedule
 from .collect import Collector
 from .config import SERVER_DIR, Settings, load_env_file
-from .render import render
 from .sources import FixtureFetcher, LiveFetcher
 from .telemetry import Forwarder, Report, State
 
@@ -55,7 +55,7 @@ class Service:
         self.clock = clock
         self.hc_render_url = hc_render_url
         self.lock = threading.Lock()
-        self.frame: bytes = b""
+        self.bodies: dict[str | None, bytes] = {}   # by format; None = raw 1-bit
         self.png: bytes = b""
         self.rendered_at: datetime | None = None
 
@@ -68,12 +68,15 @@ class Service:
             snap.battery_v = self.state.battery_v
             if self.settings.show_version_footer:
                 snap.firmware = self.state.firmware
-        canvas = render(snap)
+        grey, mono = render2.render_grey(snap), render2.render_mono(snap)
+        mono_raw = frames.pack_mono(mono)
+        bodies = {"g4z": frames.compress(frames.pack_grey(grey)),
+                  "m1z": frames.compress(mono_raw),
+                  None: mono_raw}
         buf = io.BytesIO()
-        canvas.to_image().save(buf, format="PNG")
-        frame = canvas.to_frame()
+        (grey if self.settings.screen_format == "grey" else mono.convert("L")).save(buf, format="PNG")
         with self.lock:
-            self.frame, self.png, self.rendered_at = frame, buf.getvalue(), now
+            self.bodies, self.png, self.rendered_at = bodies, buf.getvalue(), now
         log.info("rendered %s: %d departures, weather %s", f"{now:%H:%M}", len(snap.departures),
                  "ok" if snap.weather else "missing")
 
@@ -98,6 +101,8 @@ class Service:
     def handle_screen(self, query: dict[str, list[str]]) -> tuple[int, dict[str, str], bytes]:
         now = self.clock()
         report = Report.from_query(query)
+        offered = [f.strip() for f in query.get("fmt", [""])[0].split(",") if f.strip()]
+        fmt = frames.choose(offered, self.settings.screen_format)
         failing = bool(report.fail)
         with self.lock:
             new_firmware = report.fw is not None and report.fw != self.state.firmware
@@ -110,7 +115,7 @@ class Service:
                 self.state.save(self.state_path)
             except OSError as exc:
                 log.warning("could not save state: %s", exc)
-            frame = self.frame
+            frame = self.bodies.get(fmt, b"")
 
         headers = {"X-Sleep": str(p.sleep_s)}
         if p.ota:
@@ -118,11 +123,13 @@ class Service:
         if p.draw and frame:
             headers["X-Refresh"] = schedule.refresh_mode(wake=report.wake, failing=failing,
                                                          new_firmware=new_firmware)
+            if fmt:
+                headers["X-Format"] = fmt
             status, body = 200, frame
         else:
             status, body = 204, b""
-        log.info("device: %s %s sleep=%ss%s%s batt=%s fail=%s", status, headers.get("X-Refresh", "-"),
-                 p.sleep_s, " ota" if p.ota else "", " new-fw" if new_firmware else "",
+        log.info("device: %s %s %s %dB sleep=%ss%s%s batt=%s fail=%s", status, fmt or "raw",
+                 headers.get("X-Refresh", "-"), len(body), p.sleep_s, " ota" if p.ota else "", " new-fw" if new_firmware else "",
                  report.batt, report.fail)
         # Forwarding is queued, and the queue is served on another thread.
         self.forwarder.device_seen(report, now.replace(tzinfo=TZ))

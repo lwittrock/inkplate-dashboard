@@ -1,8 +1,20 @@
 # Design: the home server draws the screen
 
 Written 23 September 2026, from a planning session that followed
-[`homeserver-integration-handoff.md`](homeserver-integration-handoff.md). Nothing here is built yet.
-This is option D from that handoff, and it absorbs options A, B and C.
+[`homeserver-integration-handoff.md`](homeserver-integration-handoff.md). This is option D from
+that handoff, and it absorbs options A, B and C.
+
+**What this document owns, and what it doesn't.** It owns **the contract** between device and
+service (kept current: change it here first) and **the reasons** for the design. It is otherwise
+the record of the design as decided, not a manual:
+
+| For | Read |
+|---|---|
+| How the server code works, running it on the laptop, how it deploys | [`server/README.md`](../server/README.md) |
+| The firmware, its rules and gotchas | [`CLAUDE.md`](../CLAUDE.md) |
+| Building and operating CT 106, the HA sensors, the checks | `runbooks/inkplate-screen.md` in the home-server repo |
+| Bench test and release of the thin client | [`thin-client-switchover.md`](thin-client-switchover.md) |
+| Battery figures, modelled and (later) measured | [`power-audit.md`](power-audit.md) |
 
 ## In one paragraph
 
@@ -73,7 +85,7 @@ Pillow's mode `"1"` uses 1 = white, so the service inverts before sending.
 | Header | Meaning | Device handling |
 |---|---|---|
 | `X-Sleep` | Seconds until the next wake | Clamped to 300..28,800. Missing or invalid: 1,800 |
-| `X-Refresh` | `full` or `partial` | Missing: `full` |
+| `X-Refresh` | `full` or `partial` | Missing: `full`. Today every refresh is full: see below |
 | `X-Ota` | `1` = check the OTA manifest now | Optional hint; the device has its own trigger too |
 
 **Reply, keep the panel:** status 204, no body, with `X-Sleep` and possibly `X-Ota`. A success: the
@@ -189,8 +201,16 @@ old. The ESP32's sleep timer drifts by a few percent, but the service recomputes
 the drift never accumulates. Battery comes first: the cadence is a candidate for lengthening once
 real measurements exist, not before.
 
-`X-Refresh`: `full` every fourth wake (as `FULL_REFRESH_EVERY` today), after a failure streak, and
-on the first request from a new firmware version; `partial` otherwise.
+`X-Refresh`: `full` every fourth wake, after a failure streak, and on the first request from a new
+firmware version; `partial` otherwise.
+
+**Correction, 23 September 2026:** a partial refresh has never happened on the wall. The Inkplate
+library (11.1.0, `Inkplate6Driver.cpp`) sets `_blockPartial` on every boot and turns
+`partialUpdate()` into a full refresh until one full refresh has run; every wake is a boot after
+deep sleep, so every refresh has been full, in the old firmware and in the thin client alike. The
+header is kept because it costs nothing and a real partial refresh is a candidate lever (see
+"Later"). It also means the panel has never ghosted, and that the battery model's e-ink line (a
+quarter full, three quarters partial) is too low.
 
 ### What gets ported
 
@@ -255,58 +275,29 @@ into the footer. It costs the device nothing. Where exactly it goes is layout wo
 
 ## The container: CT 106
 
-Modelled on CT 105. The build sheet is `runbooks/inkplate-screen.md` in the home-server repo
-(written 23 September 2026), with the reasons in its `decisions.md`, Appendix H. Where the two
-differ, the runbook is newer.
-
-- Debian 13, unprivileged, 1 core, **256 MB**, **3 GB** on `local-lvm`. Host RAM goes from about
-  66% to about 68%.
-- Static **192.168.1.212**, set in Proxmox with `--nameserver`, no Draytek binding (as the
-  `.210` to `.249` rule says).
-- No SSH server, unattended-upgrades, no Docker. It does not need to move to the apps VM later.
-- `106.fw`:
-  - **inbound:** TCP 8088 from the LAN (`192.168.1.0/24`, which admits Tailscale too): the
-    Inkplate, and previews from the laptop, which has no fixed address
-  - **outbound:** TCP 443 to the internet (APIs, GitHub, healthchecks.io); to the LAN only HA on
-    `192.168.1.18:80`
-- Secrets in `/etc/inkplate-screen.env`, root-only: NS API key, HA webhook id, healthchecks.io
-  ping URLs, healthchecks.io read-only key. Recorded by name in `reference.md`, values in Proton
-  Pass.
-- Service user `screen`, systemd unit sandboxed like the CT 102 jobs (`ProtectSystem=strict`,
-  writes only to its own state folder).
-- Monitoring: three healthchecks.io checks, 9 of the free plan's 20: `screen-render` (pinged by
-  the render loop every 5 minutes, grace 15), `screen-deploy` (every deploy run, grace 1 hour; a
-  failed self-test pings `/fail` at once), and `inkplate` (above). No Uptime Kuma monitor:
-  `screen-render` already goes quiet when the service dies.
-- Backups: none. The service holds nothing git and Proton Pass do not have, apart from the last
-  device report, which the next wake refills.
+A Debian 13 LXC at `192.168.1.212`: 1 core, 256 MB, 3 GB, no Docker, no SSH server; inbound only
+port 8088 from the LAN, outbound to the LAN only Home Assistant's port 80. The service runs as
+`screen`, sandboxed; secrets in root-only env files; no vzdump, because git and Proton Pass
+rebuild it. Three healthchecks.io checks (9 of the free plan's 20): `screen-render`,
+`screen-deploy`, `inkplate`. The build sheet and the operating notes are the home-server repo's
+`runbooks/inkplate-screen.md`; why a container of its own, and the rest of the reasoning, its
+`decisions.md`, Appendix H.
 
 ## Deploying: the container pulls
 
-The repo is public, so the container fetches over HTTPS with no key.
+Every 5 minutes CT 106 fetches `master` of the public repo. When `server/` changed, it builds a
+release with its own venv (Pillow pinned by hash), runs `python -m screen.selftest`, and only then
+switches to it; otherwise the running release stays. Rollback is `git revert`. The deploy script
+and units are installed by hand, so a push can change the service but not how it is deployed. Two
+consequences that shape everything else:
 
-- A timer (`inkplate-screen-deploy.timer`, every 5 minutes) runs as its own user, `screen-deploy`,
-  which owns `/opt/inkplate-screen/`. The service user can only read it.
-- Each run: `git fetch` master. If the tree hash of `server/` is unchanged, stop. Otherwise:
-  1. Export `server/` at that commit into `releases/<sha>/`.
-  2. Create a venv and install with `pip install --require-hashes`.
-  3. Run the self-test: render a frame from the fixtures and check it is 60,000 bytes. On
-     failure, stop and keep the current release.
-  4. Point the `current` symlink at the new release and rewrite `/opt/inkplate-screen/deployed`.
-     A systemd path unit watching that file restarts the service, so the deploy user needs no
-     root rights.
-  5. Keep the last three releases.
-- `deploy.sh` and the unit files (`server/deploy/`) are installed by hand, so a push can change the
-  service but not how it is deployed. Tested 23 September 2026 in a Debian 13 container: first
-  deploy, no change, a change, a change failing the self-test, a revert, pruning. The path unit
-  restarting the service is tested only on the real container (runbook step 11).
-- **Rollback:** `git revert` on master, which deploys like any change. By hand: point `current`
-  at an older release.
-- **Trust:** the server runs whatever reaches `master` of `lwittrock/inkplate-dashboard`. Only
-  Lars can push there, and the self-test gates each deploy. Record this in the home-server repo's
-  `decisions.md`.
-- A commit that touches both firmware and `server/` deploys twice: the service within minutes, the
-  device after midnight. That is why the contract must stay backward compatible.
+- **Trust:** the server runs whatever reaches `master`, which only Lars can push to.
+- **Two deploys from one branch:** a commit touching firmware and `server/` reaches the service
+  in minutes and the device the next night. That is why the contract must stay backward
+  compatible. The firmware's CI ignores `server/` explicitly (`!server/**`), and a separate
+  workflow runs the server's unit tests on every change there.
+
+Details: [`server/README.md`](../server/README.md), "On the server", and the runbook.
 
 ## Battery
 
@@ -379,6 +370,13 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
 ## Later, deliberately not now
 
 - **Design improvements** beyond the port: after step 5, with the preview loop.
+- **A real partial refresh:** a forced `partialUpdate(true)` diffs against the library's copy of
+  the previous frame, which is empty after a boot. The server knows the frame it last served, so
+  it could send that one as well (another 60 KB on the LAN, well under a tenth of a second of
+  radio) and the device would load it as "previous" before drawing the new one. Gain: less panel
+  energy per wake and no flashing. Risk: when the server's idea of the panel is wrong (a missed
+  wake, a failure message), the diff leaves artefacts until the next full refresh. Decide with the
+  measured `awake_ms` and battery data, alongside the Wi-Fi reconnect lever.
 - **Grayscale:** the panel has a 3-bit mode, but it does not support partial refresh, so every
   wake would be a full, flashing refresh with more panel energy. Only with a reason.
 - **Skipping unchanged frames:** the device sends a hash of its last frame, the service answers

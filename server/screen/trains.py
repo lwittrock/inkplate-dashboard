@@ -41,8 +41,14 @@ def filter_dominated(trips: list[Departure]) -> list[Departure]:
 
 def pick_departures(ctr: list[Departure], hs: list[Departure], now: datetime) -> list[Departure]:
     horizon = now + LOOKAHEAD
-    ctr = sorted((d for d in ctr if d.planned <= horizon), key=lambda d: d.planned)
-    hs = sorted((d for d in hs if d.planned <= horizon), key=lambda d: d.planned)
+
+    def relevant(d: Departure) -> bool:
+        # Gone already (a delayed train counts until it actually leaves), or
+        # too far ahead to be worth a card.
+        return d.departs >= now and d.planned <= horizon
+
+    ctr = sorted(filter(relevant, ctr), key=lambda d: d.planned)
+    hs = sorted(filter(relevant, hs), key=lambda d: d.planned)
     out: list[Departure] = []
 
     def is_clean_hs(d: Departure) -> bool:

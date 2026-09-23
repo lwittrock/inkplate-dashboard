@@ -4,8 +4,8 @@ The server half of the dashboard: fetches weather and trains, runs the train
 picker and the Buienradar vote, and draws the 800x600 1-bit frame the Inkplate
 downloads. Design and decisions: [`../docs/server-rendering-design.md`](../docs/server-rendering-design.md).
 
-Status: step 1 of that document (renderer on the laptop). The HTTP service,
-telemetry and deploy come in steps 2 and 3.
+Status: steps 1 and 2 of that document are done (renderer and service, on
+the laptop). Next is step 3: the container on the home server and the deploy.
 
 ## Layout
 
@@ -17,6 +17,9 @@ telemetry and deploy come in steps 2 and 3.
 | `screen/collect.py` | Per-source cache and refresh rules, produces a `Snapshot` |
 | `screen/trains.py`, `weather.py`, `headline.py` | Picker, station vote, daily categories, greeting |
 | `screen/preview.py` | Render on the laptop, record and replay fixtures |
+| `screen/service.py` | The HTTP service: render loop, `/v1/screen`, `/preview.png`, `/status` |
+| `screen/schedule.py` | When the device wakes next, OTA hint, 200 or 204, full or partial refresh |
+| `screen/telemetry.py` | The device's report: parsing, `state.json`, forwarding to HA and healthchecks.io |
 | `screen/assets/` | Fonts and icons imported from the firmware (`tools/import_gfx_assets.py`) |
 | `tests/` | Unit tests; `tests/fixtures/<name>/` holds recorded API responses |
 
@@ -37,6 +40,16 @@ python -m screen.preview --fixture NAME      # replay a fixture at its recorded 
 python -m screen.preview --fixture NAME --at 2026-09-23T17:40 --battery 3.9
 python -m pytest
 ```
+
+The service (see its docstring for the endpoints):
+
+```sh
+BIND=127.0.0.1 python -m screen.service                  # live APIs on port 8088
+BIND=127.0.0.1 python -m screen.service --fixture wall1 --at 2026-09-24T00:05:40
+curl -D - -o frame.bin "http://127.0.0.1:8088/v1/screen?batt=3.91&fw=dev&wake=1"
+```
+
+Open `http://127.0.0.1:8088/preview.png` in a browser to see the current frame.
 
 On this laptop a globally installed pytest plugin (anyio with an old trio)
 breaks collection; run the tests with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` set.

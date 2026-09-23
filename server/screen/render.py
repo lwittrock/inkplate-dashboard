@@ -21,6 +21,7 @@ from .gfx import BLACK, WHITE, Canvas
 from .headline import greeting
 from .model import (Category, Departure, DayForecast, RainSample, Snapshot, Transfer,
                     round_half_away)
+from .telemetry import battery_percent
 
 MARGIN_LEFT = 40
 MARGIN_RIGHT = 760
@@ -572,15 +573,14 @@ def draw_footer(c: Canvas, snap: Snapshot) -> None:
     c.set_cursor(MARGIN_LEFT, FOOTER_Y)
     c.write(f"Updated {snap.now.hour:02d}:{snap.now.minute:02d}")
 
-    v = snap.battery_v
-    pct = min(max(int((v - 3.5) / (4.2 - 3.5) * 100.0), 0), 100) if v and v > 0 else -1
+    pct = battery_percent(snap.battery_v)     # same LiPo curve as Home Assistant gets
 
     body_w, body_h, nub_w, nub_h = 28, 14, 3, 6
     icon_top = FOOTER_Y - 13
     body_x = MARGIN_RIGHT - nub_w - body_w
     c.rect(body_x, icon_top, body_w, body_h)
     c.fill_rect(MARGIN_RIGHT - nub_w, icon_top + (body_h - nub_h) // 2, nub_w, nub_h)
-    if pct > 0:
+    if pct:
         c.fill_rect(body_x + 2, icon_top + 2, int(pct / 100.0 * (body_w - 4)), body_h - 4)
 
     if snap.firmware:

@@ -112,6 +112,13 @@ def test_evening_trains_arriving_after_midnight():
     assert times(pick_departures(kept, [], now)) == [("CTR", "21:49"), ("CTR", "22:49")]
 
 
+def test_departed_trains_are_dropped_but_a_delayed_one_waits():
+    ctr = [dep("07:55", "09:05"), dep("07:50", "09:10", delay=12, planned="07:50"),
+           dep("08:10", "09:20")]
+    ctr[1].departs = at("08:02")          # planned 07:50, leaves at 08:02
+    assert times(pick_departures(ctr, [], NOW)) == [("CTR", "08:02"), ("CTR", "08:10")]
+
+
 def test_filter_dominated_drops_trips_beaten_by_a_later_departure():
     trips = [dep("08:10", "09:30"), dep("08:15", "09:30"), dep("08:20", "09:25"), dep("08:25", "09:40")]
     assert [t.time for t in filter_dominated(trips)] == ["08:20", "08:25"]

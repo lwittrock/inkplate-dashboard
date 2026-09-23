@@ -76,6 +76,12 @@ Pillow's mode `"1"` uses 1 = white, so the service inverts before sending.
 | `X-Refresh` | `full` or `partial` | Missing: `full` |
 | `X-Ota` | `1` = check the OTA manifest now | Optional hint; the device has its own trigger too |
 
+**Reply, keep the panel:** status 204, no body, with `X-Sleep` and possibly `X-Ota`. A success: the
+device resets its failure count, skips drawing, and sleeps. The service sends it at night (23:30
+to 06:30), so the 00:05 OTA wake does not replace the evening's screen with a midnight one. A
+device reporting `fail > 0` gets a 200 even at night, so a "Server down" screen clears at once.
+(Added 23 September while building step 2.)
+
 **Anything else is a failure:** another status, a body that is not exactly 60,000 bytes, a
 connect over 2 s, or a total over 5 s. A short body must never reach the panel.
 
@@ -93,7 +99,8 @@ setup()
   ├─ GET /v1/screen
   │    └─ failed → failure path ("Server down")
   ├─ OTA check if X-Ota: 1 or the device's own trigger fires
-  ├─ drawBitmap(frame), full or partial refresh per X-Refresh
+  ├─ 200: drawBitmap(frame), full or partial refresh per X-Refresh
+  │  204: leave the panel as it is
   └─ deep sleep X-Sleep seconds
 ```
 
@@ -332,6 +339,9 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    only; `server/README.md` ("Relation to the firmware") lists them.
 2. **Service on the laptop.** HTTP, schedule policy, telemetry forwarding (to a dummy endpoint).
    *Done when:* `curl` gets 60,000 bytes and sensible headers for a range of simulated times.
+   **Done 23 September 2026:** `server/screen/service.py`; checked with live APIs and a dummy
+   webhook, and at a simulated 00:05 (204, one OTA hint, sleep to 06:30:30). The schedule tests
+   sweep every minute of a week and both clock changes.
 3. **CT 106.** Build it from a new runbook in the home-server repo, with the deploy timer and both
    checks.
    *Done when:* a push to `server/` appears on the container by itself, `screen-render` is green

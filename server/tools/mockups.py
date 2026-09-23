@@ -1,5 +1,5 @@
-"""Render design mockups side by side: the current design and render2, in
-grey and 1-bit, for a recorded evening and a synthetic rainy morning.
+"""Render the screen side by side in its three looks (greyscale, greyscale with
+crisp small text, 1-bit), for a recorded evening and a synthetic rainy morning.
 
     python tools/mockups.py OUT_DIR
 """
@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from PIL import Image
 
-from screen import render, render2
+from screen import render
 from screen.collect import Collector
 from screen.config import Settings
 from screen.model import (Category, Departure, DayForecast, RainSample, Snapshot, Transfer,
@@ -63,14 +63,15 @@ def morning() -> Snapshot:
 
 def main(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
+    looks = (("grey", lambda s: render.render_grey(s)),
+             ("crisp", lambda s: render.render_grey(s, crisp_small=True)),
+             ("mono", lambda s: render.render_mono(s).convert("L")))
     for name, snap in (("evening", evening()), ("morning", morning())):
-        old = render.render(snap).to_image().convert("L")
-        grey = render2.render_grey(snap)
-        mono = render2.render_mono(snap).convert("L")
-        for tag, img in (("old", old), ("grey", grey), ("mono", mono)):
+        imgs = [(tag, draw(snap)) for tag, draw in looks]
+        for tag, img in imgs:
             img.save(out / f"{name}-{tag}.png")
-        sheet = Image.new("L", (800 * 3 + 40, 600), 200)
-        for k, img in enumerate((old, mono, grey)):
+        sheet = Image.new("L", (800 * len(imgs) + 20 * (len(imgs) - 1), 600), 200)
+        for k, (_, img) in enumerate(imgs):
             sheet.paste(img, (k * 820, 0))
         sheet.save(out / f"{name}-compare.png")
         print(out / f"{name}-compare.png")

@@ -14,7 +14,7 @@ import sys
 import zlib
 from datetime import datetime, timedelta
 
-from . import frames, render2
+from . import frames, render
 from .collect import Collector
 from .config import SERVER_DIR, Settings
 from .model import (Category, Departure, DayForecast, RainSample, Snapshot, Transfer,
@@ -24,13 +24,13 @@ from .sources import FixtureFetcher
 
 
 def _check_frame(name: str, snap: Snapshot) -> None:
-    for fmt, raw, size in (("g4z", frames.pack_grey(render2.render_grey(snap)), frames.GREY_BYTES),
-                           ("m1z", frames.pack_mono(render2.render_mono(snap)), frames.MONO_BYTES)):
+    for fmt, raw, size in (("g4z", frames.pack_grey(render.render_grey(snap)), frames.GREY_BYTES),
+                           ("m1z", frames.pack_mono(render.render_mono(snap)), frames.MONO_BYTES)):
         if len(raw) != size:
             raise AssertionError(f"{name} {fmt}: frame is {len(raw)} bytes, not {size}")
         if zlib.decompress(frames.compress(raw)) != raw:
             raise AssertionError(f"{name} {fmt}: compression does not round-trip")
-    if not any(frames.pack_mono(render2.render_mono(snap))):
+    if not any(frames.pack_mono(render.render_mono(snap))):
         raise AssertionError(f"{name}: frame is blank")
 
 

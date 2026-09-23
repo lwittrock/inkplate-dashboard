@@ -30,7 +30,7 @@ from typing import Callable
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-from . import frames, render2, schedule
+from . import frames, render, schedule
 from .collect import Collector
 from .config import SERVER_DIR, Settings, load_env_file
 from .sources import FixtureFetcher, LiveFetcher
@@ -68,8 +68,8 @@ class Service:
             snap.battery_v = self.state.battery_v
             if self.settings.show_version_footer:
                 snap.firmware = self.state.firmware
-        grey = render2.render_grey(snap, crisp_small=self.settings.crisp_small)
-        mono = render2.render_mono(snap)
+        grey = render.render_grey(snap, crisp_small=self.settings.crisp_small)
+        mono = render.render_mono(snap)
         mono_raw = frames.pack_mono(mono)
         bodies = {"g4z": frames.compress(frames.pack_grey(grey)),
                   "m1z": frames.compress(mono_raw),

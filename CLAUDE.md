@@ -22,7 +22,7 @@ E-paper weather + train dashboard on an **Inkplate 6** (ESP32, 800×600 1-bit e-
 ```
 Dashboard.ino   — setup(): the whole wake, the failure path, sleep
 B_Network.ino   — connectWifi() (static IP + DHCP fallback), fetchScreen()
-C_Display.ino   — drawFrame() (the server's bitmap), drawMessage() ("Server down" / "No Wi-Fi")
+C_Display.ino   — drawGrey() / drawFrame() (the server's frame), drawMessage() ("Server down" / "No Wi-Fi")
 D_OTA.ino       — manifest check, update, app-level rollback, the OTA triggers
 Fonts/Inter_Bold18pt7b.h — the only font left, for the failure message
 ```
@@ -38,7 +38,7 @@ setup()
   │        ── fails → failedWake(FAIL_SERVER)   (OTA check first if due)
   ├─ checkForUpdates() if X-Ota: 1 or the device's own trigger
   ├─ Wi-Fi off, CPU to 80 MHz
-  ├─ 200: drawFrame(), full or partial refresh per X-Refresh
+  ├─ 200: greyscale (g4z): full refresh in 3-bit mode; 1-bit (m1z): drawFrame(), X-Refresh
   │  204: leave the panel as it is (night)
   └─ deep sleep X-Sleep seconds (clamped 300..28800; default 1800)
 ```
@@ -119,7 +119,7 @@ All Y coordinates are absolute; the section comments in `render.py` annotate eac
 - **Boot-path discipline — the whole firmware is boot path now.** The device is behind glass. Any change that stops a wake from reaching `markFirmwareValid()` triggers app-level rollback at best and needs a physical reflash at worst. Every firmware change gets a USB bench test (with `OTA_SKIP`) before it goes to `master`. Layout and logic changes belong in `server/`, which deploys without touching the device.
 - **Pushing to `master`:** firmware changes (`*.ino`, `*.h`, `Fonts/**`) build a release the device installs after midnight; `server/` changes are live on CT 106 within ~5 minutes if `screen.selftest` passes, and `server-tests.yml` runs the full server tests on GitHub. The release workflow excludes `server/**` explicitly. A commit touching both deploys twice, at different times: the contract must stay backward compatible.
 - **RTC state needs a magic sentinel and a layout-bump discipline.** `RTC_DATA_ATTR` variables survive deep sleep but not a power loss or an OTA reboot. `D_OTA.ino` guards its state with `OTA_RTC_MAGIC` (now `0xC0FFEE47`; `42` was the old layout, `44`–`46` the old caches: don't reuse). **If you change the layout of the OTA RTC state, bump the magic in the same commit.** The thin client's other RTC values (`wakeCounter`, `failStreak`, `shownMessage`, `prevAwakeMs`, `prevWifiMs`) are safe at zero and need none.
-- **Memory:** the 60,000-byte frame does not fit in static RAM (`.dram0.bss` overflows); it is `ps_malloc`'d in PSRAM. Prefer `char buf[N]` + `snprintf` over `String` on the heap.
+- **Frames and memory:** the device asks for `fmt=g4z,m1z` and draws whichever the server sends (`X-Format`, the service's `SCREEN_FORMAT`). Both arrive zlib-compressed (~14 KB greyscale, ~7 KB 1-bit) and are inflated by the ESP32 ROM's `tinfl_decompress` (`esp32/rom/miniz.h`), its ~11 KB state on the heap because `setup()` has an 8 KB stack. A greyscale frame inflates straight into the library's 3-bit buffer, `display.DMemory4Bit` (the wire format is that buffer's layout); a 1-bit one into a 60 KB `ps_malloc`'d buffer (static RAM overflows `.dram0.bss`). `display.selectDisplayMode()` switches between `INKPLATE_3BIT` and `INKPLATE_1BIT` per frame; the failure message always draws in 1-bit. Prefer `char buf[N]` + `snprintf` over `String` on the heap.
 - **1-bit display, and why every refresh is full.** `display.display()` is a full refresh (~1–2 s, flashes). **`partialUpdate()` after deep sleep is a full refresh too** (found 23 September 2026): the library (11.1.0, `Inkplate6Driver.cpp`) sets `_blockPartial` on every boot and clears it only after a full refresh, and every wake is a boot. So the server's `X-Refresh: partial` has no effect today, and never did in the old firmware either; the panel has never ghosted. A real partial refresh needs `partialUpdate(true)` with the previous frame loaded first: a lever to decide with measured data (design doc, "Later").
 - **Pixel-accurate layout** lives in `server/screen/render.py`: treat its band comments as the layout contract, and check `python -m screen.preview` output before pushing.
 

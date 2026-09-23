@@ -2,7 +2,7 @@
 
 Written 23 September 2026 for step 5 of [server-rendering-design.md](server-rendering-design.md)
 (Phase 10.4 in the home-server repo's `plan.md`). The firmware is on the `thin-client` branch; it
-compiles (1,113,605 bytes, 56% of an OTA slot) but has never run on the device. This is the
+compiles (1,120,961 bytes, 57% of an OTA slot, greyscale included) but has never run on the device. This is the
 checklist for the evening it does. Each step ends with a **Done when**.
 
 ## Before you start
@@ -22,23 +22,38 @@ checklist for the evening it does. Each step ends with a **Done when**.
 
   The static-IP lines stay as they are. Nothing else in `config.h` matters any more.
 
-## 1. The first wake
+## 1. The first wake, in greyscale
 
 Upload, open the serial monitor.
 
-**Done when** the log shows `Wi-Fi: 192.168.1.220`, `Screen: HTTP 200`, `Screen: frame 60000
-bytes` and `Full refresh`, and the panel shows the same dashboard as `preview.png`. In HA,
-`sensor.inkplate_firmware` reads `dev` and `sensor.inkplate_last_seen` is now.
+**Done when** the log shows `Wi-Fi: 192.168.1.220`, `Screen: HTTP 200`, `Screen: g4z` with a
+size around 14,000 bytes, `inflate status 0, 240000 bytes` and `Greyscale refresh`, and the panel
+shows the same dashboard as `preview.png`. In HA, `sensor.inkplate_firmware` reads `dev` and
+`sensor.inkplate_last_seen` is now.
 
-## 2. The second wake
+## 2. Greyscale or 1-bit: the real panel decides
+
+The mockups were judged on a phone; this is the panel. Look at the greyscale frame from a normal
+viewing distance: the edges of the big temperature and the train times, the grey text, the
+shaded night in the chart, the grey rain fill. Then switch the service to 1-bit, inside CT 106:
+`SCREEN_FORMAT=mono` in `/etc/inkplate-screen.env` and `systemctl restart inkplate-screen`.
+Wait a minute.
+
+**Done when** the log shows `Screen: m1z` and `inflate status 0, 60000 bytes`, the panel shows the
+1-bit version, and you have chosen. Put `SCREEN_FORMAT` back to `grey` or leave it at `mono`;
+either way it is a setting of the service, not of the firmware.
+
+## 3. The second wake
 
 Wait a minute.
 
-**Done when** the log shows `wake #1`, `Screen: HTTP 200` and `Partial refresh` (the server asks
-for full only every fourth wake), and the panel still looks right. HA's `Inkplate awake time`
-and `Wi-Fi connect time` now have values: the previous wake's.
+**Done when** the log shows a higher `wake #`, `Screen: HTTP 200` and the refresh of the chosen
+mode (in 1-bit, `Partial refresh` is logged but the library still refreshes fully, see
+`CLAUDE.md`), and the panel still looks right. HA's `Inkplate awake time` and `Wi-Fi connect time`
+now have values: the previous wake's. Compare the awake time of a greyscale and a 1-bit wake if
+both happened: that is the first measurement of what greyscale costs.
 
-## 3. Server down, and back
+## 4. Server down, and back
 
 Host shell: `pct exec 106 -- systemctl stop inkplate-screen`. Watch two wakes.
 
@@ -49,9 +64,9 @@ Host shell: `pct exec 106 -- systemctl stop inkplate-screen`. Watch two wakes.
 - the third leaves the panel alone.
 
 Then `pct exec 106 -- systemctl start inkplate-screen`. **Done when** the next wake logs
-`Screen: HTTP 200` and `Full refresh` and the dashboard is back.
+`Screen: HTTP 200` and a full refresh, and the dashboard is back.
 
-## 4. No Wi-Fi
+## 5. No Wi-Fi
 
 In the local `secrets.h`, change one letter of `WIFI_SSID`, upload, and watch two wakes. Then put
 the letter back and upload again.
@@ -60,7 +75,7 @@ the letter back and upload again.
 dashboard returns. No rollback happens: a USB flash has no pending OTA version, so the
 boot-attempts counter has nothing to roll back to.
 
-## 5. Optional: a night wake
+## 6. Optional: a night wake
 
 Only if the bench session runs past 23:30, or with the service's clock moved: the server answers
 `204`. **Done when** the log shows `Screen: HTTP 204` and the panel is unchanged.

@@ -5,10 +5,19 @@
 // One font, for the failure message only. Inter (OFL), via rop.nl/truetype2gfx.
 #include "Fonts/Inter_Bold18pt7b.h"
 
-// Draw the frame (600 rows of 100 bytes, MSB first, 1 = black) and refresh.
-// Only black pixels are drawn onto a cleared buffer: the screen is mostly
-// white, so skipping zero bytes keeps this fast at 80 MHz.
+// The greyscale frame is already in the library's 3-bit buffer (fetchScreen
+// decompressed it there). Greyscale has no partial refresh: always full.
+void drawGrey() {
+  display.selectDisplayMode(INKPLATE_3BIT);
+  DBGLN("Greyscale refresh");
+  display.display();
+}
+
+// Draw a 1-bit frame (600 rows of 100 bytes, MSB first, 1 = black) and
+// refresh. Only black pixels are drawn onto a cleared buffer: the screen is
+// mostly white, so skipping zero bytes keeps this fast at 80 MHz.
 void drawFrame(const uint8_t* frame, bool fullRefresh) {
+  display.selectDisplayMode(INKPLATE_1BIT);
   display.clearDisplay();
   display.setRotation(0);
   for (int y = 0; y < 600; y++) {
@@ -35,6 +44,7 @@ void drawFrame(const uint8_t* frame, bool fullRefresh) {
 // The whole screen for a failure: one centered line, nothing else, and a
 // full refresh so no trace of the dashboard is left to mislead.
 void drawMessage(const char* text) {
+  display.selectDisplayMode(INKPLATE_1BIT);   // BLACK means black in this mode
   display.clearDisplay();
   display.setRotation(0);
   display.setFont(&Inter_Bold18pt7b);

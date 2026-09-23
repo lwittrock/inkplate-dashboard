@@ -16,6 +16,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <esp_bt.h>
+#include "esp32/rom/miniz.h"   // the ROM's inflater, for compressed frames
 #include "config.h"
 
 // Firmware version: CI writes firmware_version.h at build time (see
@@ -54,8 +55,13 @@
 #define SCREEN_URL "http://192.168.1.212:8088/v1/screen"
 #endif
 
-// The contract's frame: 600 rows of 100 bytes, MSB first, 1 = black.
-#define FRAME_BYTES 60000
+// Frame formats (docs/server-rendering-design.md, "The contract"), both
+// zlib-compressed on the wire:
+//   g4z  greyscale, the library's 3-bit buffer layout: 2 pixels per byte, 0-7
+//   m1z  1-bit: 600 rows of 100 bytes, MSB first, 1 = black
+#define GREY_BYTES     240000
+#define MONO_BYTES     60000
+#define COMPRESSED_MAX 131072   // a frame is ~7-15 KB; anything near this is wrong
 
 // X-Sleep is clamped to this range; a missing or unreadable header gives the default.
 #define SLEEP_MIN_S     300
@@ -82,14 +88,21 @@ RTC_DATA_ATTR uint8_t  shownMessage  = FAIL_NONE;  // which message the panel sh
 RTC_DATA_ATTR uint32_t prevAwakeMs   = 0;          // last wake's active time, reported next wake
 RTC_DATA_ATTR uint32_t prevWifiMs    = 0;          // last wake's Wi-Fi connect time
 
+enum FrameFormat : uint8_t { FRAME_MONO = 0, FRAME_GREY = 1 };
+
 // What the server's reply asked for.
 struct ScreenReply {
-  bool     ok;         // 200 with a whole frame, or 204
-  bool     hasFrame;   // 200: draw it; 204: leave the panel as it is
-  bool     fullRefresh;
-  bool     otaHint;
-  uint32_t sleepS;
+  bool        ok;          // 200 with a whole frame, or 204
+  bool        hasFrame;    // 200: draw it; 204: leave the panel as it is
+  bool        fullRefresh; // 1-bit only; greyscale is always a full refresh
+  bool        otaHint;
+  uint32_t    sleepS;
+  FrameFormat format;
 };
+
+// A 1-bit frame lands here; a greyscale one goes straight into the library's
+// 3-bit buffer (display.DMemory4Bit). PSRAM: 60 KB don't fit in static RAM.
+uint8_t* monoFrame = nullptr;
 
 Inkplate display(INKPLATE_1BIT);
 
@@ -130,11 +143,9 @@ void setup() {
   // must not count against it, so this comes before the server request.
   markFirmwareValid();
 
-  // 60 KB does not fit in static RAM; PSRAM holds it (the Inkplate library
-  // keeps its own framebuffers there too). Never freed: deep sleep resets it.
-  uint8_t* frame = (uint8_t*)ps_malloc(FRAME_BYTES);
-  if (!frame) frame = (uint8_t*)malloc(FRAME_BYTES);
-  ScreenReply reply = frame ? fetchScreen(frame, batteryV) : ScreenReply{};
+  // Never freed: deep sleep resets everything.
+  monoFrame = (uint8_t*)ps_malloc(MONO_BYTES);
+  ScreenReply reply = fetchScreen(batteryV);
 
   if (!reply.ok) {
     failedWake(FAIL_SERVER, wakeStart); // does not return
@@ -151,7 +162,8 @@ void setup() {
   setCpuFrequencyMhz(80);
 
   if (reply.hasFrame) {
-    drawFrame(frame, reply.fullRefresh);
+    if (reply.format == FRAME_GREY) drawGrey();
+    else drawFrame(monoFrame, reply.fullRefresh);
     shownMessage = FAIL_NONE;
   }
 

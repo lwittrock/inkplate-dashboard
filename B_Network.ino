@@ -58,15 +58,50 @@ static uint32_t parseSleep(const String& s) {
   return (uint32_t)v;
 }
 
-// GET /v1/screen. The query string is this wake's report. On a 200 the frame
-// lands in `frame`; anything but exactly FRAME_BYTES counts as a failure, so
-// a cut-off download can never reach the panel.
-ScreenReply fetchScreen(uint8_t* frame, float batteryV) {
-  ScreenReply r = { false, false, true, false, SLEEP_DEFAULT_S };
+// Read exactly `len` bytes of body into `dst`, within 5 s. Returns what arrived.
+static size_t readBody(HTTPClient& http, uint8_t* dst, size_t len) {
+  WiFiClient* stream = http.getStreamPtr();
+  size_t got = 0;
+  uint32_t deadline = millis() + 5000;
+  while (got < len && millis() < deadline && (http.connected() || stream->available())) {
+    size_t avail = stream->available();
+    if (avail) {
+      got += stream->readBytes(dst + got, min(avail, len - got));
+    } else {
+      delay(1);
+    }
+  }
+  return got;
+}
 
-  char url[256];
+// Decompress a zlib stream (header and Adler-32 checked) with the ESP32's ROM
+// inflater into exactly `outLen` bytes. The decompressor state (~11 KB) goes
+// on the heap: setup() runs on an 8 KB stack.
+static bool inflateExact(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen) {
+  tinfl_decompressor* d = (tinfl_decompressor*)malloc(sizeof(tinfl_decompressor));
+  if (!d) return false;
+  tinfl_init(d);
+  size_t inBytes = inLen, outBytes = outLen;
+  tinfl_status st = tinfl_decompress(d, in, &inBytes, out, out, &outBytes,
+                                     TINFL_FLAG_PARSE_ZLIB_HEADER |
+                                     TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF |
+                                     TINFL_FLAG_COMPUTE_ADLER32);
+  free(d);
+  DBG("Screen: inflate status "); DBG((int)st); DBG(", "); DBG(outBytes); DBGLN(" bytes");
+  return st == TINFL_STATUS_DONE && outBytes == outLen;
+}
+
+// GET /v1/screen. The query string is this wake's report and the formats this
+// firmware can draw; X-Format says which one came back. A greyscale frame is
+// decompressed straight into the library's 3-bit buffer; a 1-bit one into
+// `monoFrame`. Anything that doesn't decompress to exactly the format's size
+// is a failure, so a damaged download can never reach the panel.
+ScreenReply fetchScreen(float batteryV) {
+  ScreenReply r = { false, false, true, false, SLEEP_DEFAULT_S, FRAME_MONO };
+
+  char url[288];
   snprintf(url, sizeof(url),
-           "%s?batt=%.2f&fw=%s&rssi=%d&wake=%lu&fail=%u&awake_ms=%lu&wifi_ms=%lu",
+           "%s?fmt=g4z,m1z&batt=%.2f&fw=%s&rssi=%d&wake=%lu&fail=%u&awake_ms=%lu&wifi_ms=%lu",
            SCREEN_URL, batteryV, FIRMWARE_VERSION, (int)WiFi.RSSI(),
            (unsigned long)wakeCounter, (unsigned)failStreak,
            (unsigned long)prevAwakeMs, (unsigned long)prevWifiMs);
@@ -75,8 +110,8 @@ ScreenReply fetchScreen(uint8_t* frame, float batteryV) {
   HTTPClient http;
   http.setConnectTimeout(2000);
   http.setTimeout(5000);
-  const char* headerKeys[] = { "X-Sleep", "X-Refresh", "X-Ota" };
-  http.collectHeaders(headerKeys, 3);
+  const char* headerKeys[] = { "X-Sleep", "X-Refresh", "X-Ota", "X-Format" };
+  http.collectHeaders(headerKeys, 4);
 
   if (!http.begin(client, url)) {
     DBGLN("Screen: http.begin failed");
@@ -92,23 +127,27 @@ ScreenReply fetchScreen(uint8_t* frame, float batteryV) {
     r.fullRefresh = (http.header("X-Refresh") != "partial");
   }
 
+  int size = http.getSize();
+  String fmt = http.header("X-Format");
   if (code == 204) {
     r.ok = true;           // keep the panel as it is
-  } else if (code == 200 && http.getSize() == FRAME_BYTES) {
-    WiFiClient* stream = http.getStreamPtr();
-    size_t got = 0;
-    uint32_t deadline = millis() + 5000;
-    while (got < FRAME_BYTES && millis() < deadline &&
-           (http.connected() || stream->available())) {
-      size_t avail = stream->available();
-      if (avail) {
-        got += stream->readBytes(frame + got, min(avail, (size_t)(FRAME_BYTES - got)));
-      } else {
-        delay(1);
+  } else if (code == 200 && size > 0 && size <= COMPRESSED_MAX && (fmt == "g4z" || fmt == "m1z")) {
+    uint8_t* body = (uint8_t*)ps_malloc(size);
+    if (body) {
+      size_t got = readBody(http, body, size);
+      DBG("Screen: "); DBG(fmt); DBG(" "); DBG(got); DBGLN(" bytes");
+      if (got == (size_t)size) {
+        if (fmt == "g4z") {
+          r.format = FRAME_GREY;
+          r.ok = inflateExact(body, got, display.DMemory4Bit, GREY_BYTES);
+        } else {
+          r.format = FRAME_MONO;
+          r.ok = monoFrame && inflateExact(body, got, monoFrame, MONO_BYTES);
+        }
+        r.hasFrame = r.ok;
       }
+      free(body);
     }
-    DBG("Screen: frame "); DBG(got); DBGLN(" bytes");
-    r.ok = r.hasFrame = (got == FRAME_BYTES);
   }
   http.end();
   return r;

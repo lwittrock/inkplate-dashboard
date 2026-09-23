@@ -198,9 +198,12 @@ are the specification:
 - Test fixtures: recorded API responses (including a disrupted NS day, if one can be caught) so
   renders are reproducible offline.
 
-**Fonts:** Inter TTF (OFL) in `server/fonts/`, drawn without anti-aliasing. Point sizes will not
-map one to one to the GFX headers; match the cap heights noted in `CLAUDE.md` (14, 17, 26, 64 px).
-**Icons:** a one-off script turns the bitmaps in `icons.h` into PNGs under `server/assets/`.
+**Fonts and drawing (changed 23 September, while building step 1):** instead of drawing Inter TTF
+with Pillow, which would only approximate the GFX sizes, `server/tools/import_gfx_assets.py`
+imports the firmware's own GFX font headers and `icons.h` into `server/screen/assets/`, and
+`server/screen/gfx.py` reproduces Adafruit GFX's drawing routines with the same integer
+arithmetic. Same input, same pixels, which makes the port checkable against the wall. New sizes
+or fonts for a later redesign can still come from TTF alongside.
 Keep `server/` free of `.h` and `.ino` files: CI's path filter would build a firmware release for
 every server change.
 

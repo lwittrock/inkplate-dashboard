@@ -5,6 +5,15 @@ Written 23 September 2026 for step 5 of [server-rendering-design.md](server-rend
 compiles (1,120,961 bytes, 57% of an OTA slot, greyscale included) but has never run on the device. This is the
 checklist for the evening it does. Each step ends with a **Done when**.
 
+**Why a bench session and not a straight OTA** (decided 24 September 2026). A switch-over by OTA
+alone works for bugs that still reach Wi-Fi and the server: the next release fixes them over the
+air. A crash before or during the first request would not be rolled back for this jump, because
+the old firmware's "update pending" marker lives in RTC memory, which this hardware clears on the
+post-update reboot (`CLAUDE.md`, OTA gotchas), and the thin client resets that state on its first
+boot anyway. The bench catches such crashes cheaply, and it is where greyscale gets judged on the
+real panel. Considered and not done: keeping the rollback bookkeeping in flash (NVS), which would
+let any release roll itself back.
+
 ## Before you start
 
 - **CT 106 serves the screen:** the home-server runbook `runbooks/inkplate-screen.md` steps 0

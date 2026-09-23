@@ -245,14 +245,12 @@ are the specification:
 - Test fixtures: recorded API responses (including a disrupted NS day, if one can be caught) so
   renders are reproducible offline.
 
-**Fonts and drawing (changed 23 September, while building step 1):** instead of drawing Inter TTF
-with Pillow, which would only approximate the GFX sizes, `server/tools/import_gfx_assets.py`
-imports the firmware's own GFX font headers and `icons.h` into `server/screen/assets/`, and
-`server/screen/gfx.py` reproduces Adafruit GFX's drawing routines with the same integer
-arithmetic. Same input, same pixels, which makes the port checkable against the wall. New sizes
-or fonts for a later redesign can still come from TTF alongside.
-Keep `server/` free of `.h` and `.ino` files: CI's path filter would build a firmware release for
-every server change.
+**Fonts and drawing.** For the exact port (23 September, step 1), the firmware's own GFX fonts and
+icons were imported and Adafruit GFX's drawing routines reproduced, so the port could be checked
+against the wall pixel for pixel; it matched. **Since 24 September** the screen is the redesign
+(`server/screen/render.py`): Inter as a variable TTF at any size and Material Symbols weather
+icons, drawn for the panel's greyscale and 1-bit modes. The exact port was removed then and is in
+git history (commit `c9a36d2`).
 
 **Laptop preview:** `python -m screen.preview` renders from live APIs or from fixtures into a PNG,
 enlarged 2x for viewing. This is the design loop: change, preview in seconds, push.

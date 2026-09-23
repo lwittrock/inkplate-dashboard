@@ -288,10 +288,11 @@ the schedule policy below:
 Because the service does the pinging, a dead server also makes this check go quiet, alongside the
 server's own checks. That's acceptable: either way the screen is not updating.
 
-### Status line (option C)
+### Status line (option C): declined
 
-The service reads healthchecks.io's API (read-only key) and draws "server OK" or "N problems"
-into the footer. It costs the device nothing. Where exactly it goes is layout work for the port.
+Planned as "server OK" or "N problems" in the footer, from healthchecks.io's API. **Declined by
+Lars on 24 September 2026:** not needed on the wall, since healthchecks.io and HA already alert
+by themselves.
 
 ## The container: CT 106
 
@@ -402,6 +403,10 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
 - **Skipping unchanged frames:** the device sends a hash of its last frame, the service answers
   "unchanged", and the device skips download and refresh. That would save about 20% of a wake,
   but in the daytime the frame almost always changes (departures, the "updated" time).
+- **A sun-with-showers icon.** Material Symbols has no sun-and-rain glyph, so days the forecast
+  marks as sunny with showers show the plain rain icon in the week strip (the firmware's bitmap set
+  had one). To solve later: compose one from `partly_cloudy_day` and `rainy`, or take a glyph from
+  another open icon set.
 - **"Buienradar and NS in HA"** from the home-server ideas list: the service already has the data
   and could expose it to HA as JSON.
 

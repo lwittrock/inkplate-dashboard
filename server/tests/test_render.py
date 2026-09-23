@@ -4,7 +4,7 @@ import pytest
 
 from screen import gfx
 from screen.gfx import BLACK, Canvas
-from screen.model import Category, Departure, DayForecast, Snapshot, Transfer, WeatherNow
+from screen.model import Category, Departure, DayForecast, RainSample, Snapshot, Transfer, WeatherNow
 from screen.render import render
 
 
@@ -37,19 +37,22 @@ def test_text_bounds_follow_the_glyph_table():
 
 
 def dep(origin, time, arr, **kw):
-    return Departure(origin=origin, time=time, track=kw.pop("track", "5b"), delay_min=kw.pop("delay", 0),
-                     cancelled=kw.pop("cancelled", False), uni_arr=arr,
-                     transfer=kw.pop("transfer", Transfer.OK),
-                     planned_iso=f"2026-09-23T{time}:00+0200", leg_count=2)
+    t = datetime.fromisoformat(f"2026-09-23T{time}")
+    return Departure(origin=origin, planned=t, departs=t,
+                     arrives=datetime.fromisoformat(f"2026-09-23T{arr}"),
+                     track=kw.pop("track", "5b"), delay_min=kw.pop("delay", 0),
+                     cancelled=kw.pop("cancelled", False), transfer=kw.pop("transfer", Transfer.OK),
+                     leg_count=2)
 
 
 def busy_snapshot(hour=17):
-    days = [DayForecast(n, 18, 9, 30, cat, sunny, "07:31", "19:39", 20, 45, 17, 30)
+    days = [DayForecast(n, 18, 9, 17, cat, sunny, "07:31", "19:39", 20.0, 45.0, 3.0)
             for n, cat, sunny in [("Today", Category.RAIN, False), ("Thu", Category.CLEAR, False),
                                   ("Fri", Category.DRIZZLE, True), ("Sat", Category.SNOW, True),
                                   ("Sun", Category.FOG, False), ("Mon", Category.THUNDERSTORM, False),
                                   ("Tue", Category.RAIN_HEAVY, False)]]
-    rain = [(0.0 if i < 4 else 0.3 * i, f"{hour}:{(i * 5) % 60:02d}") for i in range(24)]
+    rain = [RainSample(0.0 if i < 4 else 0.3 * i, f"{hour + (i * 5) // 60:02d}:{(i * 5) % 60:02d}")
+            for i in range(24)]
     return Snapshot(
         now=datetime(2026, 9, 23, hour, 5),
         weather=WeatherNow(temp=-3.7, wind_kmh=42.4, category=Category.RAIN_HEAVY, wind_bearing=225),

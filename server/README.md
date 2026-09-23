@@ -41,31 +41,38 @@ python -m pytest
 On this laptop a globally installed pytest plugin (anyio with an old trio)
 breaks collection; run the tests with `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` set.
 
-## How exact the port is
+## Relation to the firmware
 
-Text, icons and shapes are drawn with the firmware's own GFX fonts and bitmaps
-and with Adafruit GFX's integer algorithms, so the same input gives the same
-pixels. The remaining differences:
+**The port matched the wall on 23 September 2026** (commit `c9a36d2`), down to
+a firmware bug that left one train card in the evening. Drawing still follows
+the firmware pixel for pixel: its own GFX fonts and bitmaps, Adafruit GFX's
+integer algorithms, and single precision where the firmware's float rounding
+decides pixels (small-caps spacing, the sun arc). Elsewhere double precision
+can move a pixel in rare cases.
 
-- **Float rounding.** The firmware computes in single precision. The port
-  matches it where it decides pixels systematically (small-caps letter
-  spacing, the sun arc's sample steps) and uses double precision elsewhere,
-  which can move a pixel in rare cases.
-- **Caching.** The server's per-source cache and refresh rules
-  (`collect.py`) replace the firmware's RTC caches, as the design document
-  describes. Given the same responses, the frame is the same.
-- **The footer battery** shows the device's last reported voltage.
+Changed on purpose since then:
 
-## Firmware behaviour kept on purpose, to be decided
+1. **Trains compare full timestamps.** The firmware compared "HH:MM" text, so
+   a train arriving after midnight (22:49, arriving 00:10) "beat" every
+   earlier one, and from about 21:00 the wall showed a single card. Trains
+   more than three hours ahead are left out (`trains.LOOKAHEAD`), so the
+   evening shows the last trains rather than tomorrow's first. Delays are
+   now exact differences of timestamps.
+2. **`precipitation_hours` is read.** Open-Meteo sends it as a JSON float
+   (`12.0`), and the firmware's `precipHours[i] | 0` returns the default for
+   anything not stored as an integer (ArduinoJson 7.4.3), so the "3 or more
+   hours of precipitation means drizzle" rule never fired.
+3. **"Wet and windy" appears.** In the firmware, notable wind always set the
+   "Windy" override first, and the combo needed no override to be set.
+   Now a rainy, windy day reads "Wet and windy"; stormy, freezing, cold and
+   hot still come first.
+4. **Temperatures are rounded, not truncated.** The firmware cast to int:
+   18.7 showed as 18, -0.6 as 0. Applies to the big temperature and the week
+   strip, and to the feels-like value behind the headline.
+5. **Structure.** Parsers turn JSON into typed records (`model.py`); the
+   logic modules no longer see raw JSON or "HH:MM" strings. The unused
+   `precipitation_probability_max` is no longer fetched.
 
-Found while porting. The port reproduces both so the preview can be checked
-against the wall; each is a one-line change once the port is confirmed.
-
-1. **`precipitation_hours` is always read as 0.** Open-Meteo sends it as a
-   JSON float (`12.0`), and the firmware's `precipHours[i] | 0` returns the
-   default for anything not stored as an integer (ArduinoJson 7.4.3). The
-   "3 or more hours of precipitation means drizzle" rule in
-   `calculateDailyWeather` has never fired. See `sources.parse_om_daily`.
-2. **"Wet and windy" never appears.** Notable wind always sets the "Windy"
-   override, and the combo requires that no override is set. See
-   `headline.greeting`.
+Server-side by design (see the design document): per-source caching in
+`collect.py` replaces the firmware's RTC caches, and the footer battery shows
+the device's last reported voltage.

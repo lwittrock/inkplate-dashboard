@@ -19,7 +19,8 @@ import struct
 
 from .gfx import BLACK, WHITE, Canvas
 from .headline import greeting
-from .model import Category, Departure, DayForecast, Snapshot, Transfer
+from .model import (Category, Departure, DayForecast, RainSample, Snapshot, Transfer,
+                    round_half_away)
 
 MARGIN_LEFT = 40
 MARGIN_RIGHT = 760
@@ -197,7 +198,7 @@ def draw_header(c: Canvas, snap: Snapshot, night: bool) -> None:
     c.text_color = BLACK
     c.set_cursor(40, 48)
     current = snap.weather.category if snap.weather else None
-    c.write(greeting(now, fc[0] if fc else None, current, c.text_width))
+    c.write(greeting(now, fc[0] if fc else None, current))
 
     # "Wed · 23 Sep 2026"; the middot is a small circle.
     day = DAYS_ABBR[now.weekday()]
@@ -265,7 +266,7 @@ def draw_current_weather(c: Canvas, snap: Snapshot, night: bool) -> None:
     w = snap.weather
     c.draw_icon(40, 125, icon128(w.category, night))
 
-    temp = str(int(w.temp))
+    temp = str(round_half_away(w.temp))
     c.set_font(BOLD48)
     c.text_color = BLACK
     c.set_cursor(195, 210)
@@ -369,7 +370,7 @@ def draw_temp_curve(c: Canvas, snap: Snapshot) -> None:
         c.set_font(BOLD9)
         c.text_color = BLACK
         v = hourly[idx]
-        label = str(int(v + (0.5 if v >= 0 else -0.5)))
+        label = str(round_half_away(v))
         _, _, bw, bh = c.text_bounds(label)
         text_left, text_y = px - bw // 2 - 3, py - 8
         c.set_cursor(text_left, text_y)
@@ -383,14 +384,14 @@ def draw_temp_curve(c: Canvas, snap: Snapshot) -> None:
         center_print(c, x_for(hour), 276, label)
 
 
-def draw_rain_chart(c: Canvas, rain: list[tuple[float, str]]) -> None:
+def draw_rain_chart(c: Canvas, rain: list[RainSample]) -> None:
     """Buienradar's 2 h nowcast: up to 24 five-minute samples in mm/h."""
     x0, x1, y_top, y_bot = 420, 750, 140, 260
     chart_h = y_bot - y_top
     heavy, medium, light = 10.0, 4.0, 0.4
     max_scale = 12.0
 
-    values = [mm for mm, _ in rain]
+    values = [s.mmh for s in rain]
     has_rain = any(v > 0.2 for v in values)
     max_rain = max([0.0] + values)
     if max_rain > max_scale:
@@ -446,22 +447,12 @@ def draw_rain_chart(c: Canvas, rain: list[tuple[float, str]]) -> None:
 
     # Hour ticks where Buienradar's own label is on the hour.
     c.set_font(REG9)
-    for i in range(n):
-        label = rain[i][1]
-        if len(label) < 5 or _atoi(label[3:5]) != 0:
+    for i, sample in enumerate(rain[:n]):
+        if not sample.label.endswith(":00"):
             continue
         x = x_for(i)
         c.line(x, y_bot, x, y_bot + 4)
-        center_print(c, x, 276, f"{_atoi(label[0:2]):02d}:00")
-
-
-def _atoi(s: str) -> int:
-    digits = ""
-    for ch in s.strip():
-        if not ch.isdigit():
-            break
-        digits += ch
-    return int(digits) if digits else 0
+        center_print(c, x, 276, sample.label)
 
 
 # --- week strip (y=324-445) -----------------------------------------------------------
@@ -628,7 +619,7 @@ def render(snap: Snapshot) -> Canvas:
 
     # Right panel: the rain chart when 0.4 mm/h (Buienradar's "light rain"
     # floor) or more is coming in the next 2 h, else the 24 h temperature curve.
-    if any(mm >= 0.4 for mm, _ in snap.rain):
+    if any(s.mmh >= 0.4 for s in snap.rain):
         c.set_font(REG9)
         small_caps(c, 420, 112, "RAIN COMING")
         draw_rain_chart(c, snap.rain)

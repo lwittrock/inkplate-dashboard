@@ -327,6 +327,9 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
 1. **Renderer on the laptop.** Port, fixtures, unit tests, preview.
    *Done when:* a preview from live APIs matches the wall at the same moment, section by section,
    and the picker tests cover every rule in `CLAUDE.md`'s "Train picker policy".
+   **Done 23 September 2026:** the preview matched the wall, including a firmware bug that left
+   one train card in the evening. Three latent firmware bugs were then fixed on the server side
+   only; `server/README.md` ("Relation to the firmware") lists them.
 2. **Service on the laptop.** HTTP, schedule policy, telemetry forwarding (to a dummy endpoint).
    *Done when:* `curl` gets 60,000 bytes and sensible headers for a range of simulated times.
 3. **CT 106.** Build it from a new runbook in the home-server repo, with the deploy timer and both

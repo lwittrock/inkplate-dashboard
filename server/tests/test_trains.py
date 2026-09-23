@@ -1,19 +1,25 @@
 """The train picker, rule by rule, from CLAUDE.md "Train picker policy"."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from screen.model import Departure, Transfer
-from screen.trains import (calculate_delay, ctr_has_disruption, filter_dominated,
-                           pick_departures)
+from screen.trains import ctr_has_disruption, filter_dominated, pick_departures
 
 NOW = datetime(2026, 9, 23, 8, 0)
 
 
+def at(hhmm: str) -> datetime:
+    """"08:10" today; "+00:10" tomorrow."""
+    day = NOW + timedelta(days=1) if hhmm.startswith("+") else NOW
+    h, m = hhmm.lstrip("+").split(":")
+    return day.replace(hour=int(h), minute=int(m))
+
+
 def dep(time, arr, origin="CTR", delay=0, cancelled=False, legs=2, planned=None):
     return Departure(
-        origin=origin, time=time, track="5", delay_min=delay, cancelled=cancelled,
-        uni_arr=arr, transfer=Transfer.OK,
-        planned_iso=f"2026-09-23T{planned or time}:00+0200", leg_count=legs)
+        origin=origin, planned=at(planned or time), departs=at(time),
+        arrives=at(arr) if arr else None, track="5", delay_min=delay, cancelled=cancelled,
+        transfer=Transfer.OK, leg_count=legs)
 
 
 def times(picked):
@@ -36,8 +42,7 @@ def test_nine_minutes_late_is_still_good_ten_is_not():
 def test_cancelled_centraal_gets_a_clean_hs_substitute():
     ctr = [dep("08:10", "09:20", cancelled=True), dep("08:40", "09:50")]
     hs = [dep("08:14", "09:20", "HS")]
-    picked = pick_departures(ctr, hs, NOW)
-    assert times(picked) == [("HS", "08:14"), ("CTR", "08:40")]
+    assert times(pick_departures(ctr, hs, NOW)) == [("HS", "08:14"), ("CTR", "08:40")]
 
 
 def test_substitute_with_more_than_two_legs_is_rejected():
@@ -95,6 +100,18 @@ def test_no_centraal_trips_promotes_clean_hs():
     assert times(pick_departures([], hs, NOW)) == [("HS", "08:14"), ("HS", "08:44")]
 
 
+def test_evening_trains_arriving_after_midnight():
+    # 23 September 2026, 21:33: the firmware compared "HH:MM" text, so the
+    # 22:49 arriving "00:10" beat everything and one card was left.
+    now = NOW.replace(hour=21, minute=33)
+    ctr = [dep("21:49", "23:10"), dep("22:49", "+00:10"),
+           dep("+04:44", "+06:40", legs=3), dep("+05:49", "+07:10")]
+    kept = filter_dominated(ctr)
+    assert len(kept) == 4
+    # Tomorrow's trains are beyond the three-hour look-ahead.
+    assert times(pick_departures(kept, [], now)) == [("CTR", "21:49"), ("CTR", "22:49")]
+
+
 def test_filter_dominated_drops_trips_beaten_by_a_later_departure():
     trips = [dep("08:10", "09:30"), dep("08:15", "09:30"), dep("08:20", "09:25"), dep("08:25", "09:40")]
     assert [t.time for t in filter_dominated(trips)] == ["08:20", "08:25"]
@@ -106,13 +123,8 @@ def test_cancelled_trips_neither_dominate_nor_get_dropped():
 
 
 def test_disruption_check_looks_at_the_first_five_trips():
-    clean = [dep(f"08:{m:02d}", f"09:{m:02d}") for m in range(10, 70, 10) if m < 60]
+    clean = [dep(f"08:{m:02d}", f"09:{m:02d}") for m in range(0, 50, 10)]
     assert not ctr_has_disruption(clean)
     assert ctr_has_disruption([])
     assert ctr_has_disruption(clean[:4] + [dep("08:55", "09:55", delay=10)])
-    assert not ctr_has_disruption(clean[:5] + [dep("08:55", "09:55", cancelled=True)])
-
-
-def test_delay_across_midnight():
-    assert calculate_delay("2026-09-23T23:58:00+0200", "2026-09-24T00:02:00+0200") == 4
-    assert calculate_delay("2026-09-23T08:10:00+0200", "2026-09-23T08:22:00+0200") == 12
+    assert not ctr_has_disruption(clean + [dep("08:55", "09:55", cancelled=True)])

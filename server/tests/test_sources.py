@@ -1,15 +1,23 @@
+import json
+from datetime import datetime
+from pathlib import Path
+
+from screen.collect import Collector
+from screen.config import Settings
 from screen.model import Category, Transfer
-from screen.sources import parse_br_rain, parse_om_daily, parse_trips
+from screen.sources import (FixtureFetcher, icon_code_from_url, local_time, parse_br_rain,
+                            parse_br_stations, parse_om_daily, parse_trips)
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def leg(planned, actual=None, arr_planned=None, arr_actual=None, cancelled=False, track="5"):
+    def iso(t):
+        return f"2026-09-{'24' if t.startswith('+') else '23'}T{t.lstrip('+')}:00+0200" if t else None
     return {
         "cancelled": cancelled,
-        "origin": {"plannedDateTime": f"2026-09-23T{planned}:00+0200",
-                   "actualDateTime": f"2026-09-23T{actual}:00+0200" if actual else None,
-                   "plannedTrack": track},
-        "destination": {"plannedDateTime": f"2026-09-23T{arr_planned}:00+0200" if arr_planned else None,
-                        "actualDateTime": f"2026-09-23T{arr_actual}:00+0200" if arr_actual else None},
+        "origin": {"plannedDateTime": iso(planned), "actualDateTime": iso(actual), "plannedTrack": track},
+        "destination": {"plannedDateTime": iso(arr_planned), "actualDateTime": iso(arr_actual)},
     }
 
 
@@ -18,45 +26,78 @@ def test_parse_trips():
         {"legs": [leg("08:10", "08:22"), leg("09:05", "09:05", "09:20", "09:21")]},
         {"legs": [leg("08:40", cancelled=True), leg("09:35", None, "09:50")]},
         {"legs": [leg("09:10", "09:10"), leg("10:05", "10:11", "10:20")]},
-        {"legs": [leg("09:40"), leg("10:35", None, "10:50", cancelled=True)]},
+        {"legs": [leg("23:40"), leg("+00:35", None, "+00:50", cancelled=True)]},
         {"legs": []},
     ]}
     a, b, c, d = parse_trips(doc, "CTR")
     assert (a.time, a.delay_min, a.uni_arr, a.transfer, a.leg_count) == ("08:22", 12, "09:21", Transfer.OK, 2)
+    assert a.planned == datetime(2026, 9, 23, 8, 10)
     assert (b.time, b.cancelled, b.delay_min, b.uni_arr) == ("08:40", True, 0, "09:50")
     assert c.transfer == Transfer.LATE           # Breda sprinter 6 minutes late
     assert d.transfer == Transfer.CANCELLED
-    assert a.planned_iso == "2026-09-23T08:10:00+0200"
+    assert d.arrives == datetime(2026, 9, 24, 0, 50)
+
+
+def test_times_convert_to_amsterdam_wall_clock():
+    assert local_time("2026-09-23T21:49:00+0200") == datetime(2026, 9, 23, 21, 49)
+    assert local_time("2026-09-23T19:49:00+00:00") == datetime(2026, 9, 23, 21, 49)
+    assert local_time("2026-09-23T21:20:00") == datetime(2026, 9, 23, 21, 20)
+    assert local_time("nonsense") is None
 
 
 def test_parse_rain():
     rain = parse_br_rain("000|14:05\r\n077|14:10\n109|14:15\nbad line\n")
-    assert [label for _, label in rain] == ["14:05", "14:10", "14:15"]
-    assert rain[0][0] == 0.0
-    assert round(rain[1][0], 3) == 0.1
-    assert rain[2][0] == 1.0
+    assert [s.label for s in rain] == ["14:05", "14:10", "14:15"]
+    assert rain[0].mmh == 0.0
+    assert round(rain[1].mmh, 3) == 0.1
+    assert rain[2].mmh == 1.0
 
 
-def test_parse_daily_reads_precipitation_hours_like_the_firmware():
-    # Open-Meteo sends precipitation_hours as 12.0; the firmware's `| 0` reads
-    # any JSON float as 0, so the ">= 3 hours means drizzle" rule never fires.
+def test_parse_stations():
+    url = "https://cdn.buienradar.nl/resources/images/icons/weather/30x30/{}.png"
+    doc = {"actual": {"stationmeasurements": [
+        {"stationname": "A", "lat": 52.1, "lon": 4.3, "temperature": 17.1, "windspeed": 2.0,
+         "winddirectiondegrees": 276, "timestamp": "2026-09-23T21:20:00", "iconurl": url.format("aa")},
+        {"stationname": "B", "lat": 52.2, "lon": 4.4, "temperature": 16.0,
+         "winddirection": "ZW", "iconurl": url.format("cc")},
+        {"stationname": "No icon", "temperature": 15.0},
+        {"stationname": "No temperature", "iconurl": url.format("a")},
+    ]}}
+    a, b = parse_br_stations(doc)
+    assert (a.icon_code, a.bearing, a.observed) == ("a", 276, datetime(2026, 9, 23, 21, 20))
+    assert (b.icon_code, b.bearing, b.wind_ms) == ("cc", 225, 0.0)
+    assert icon_code_from_url(url.format("AA")) == "a"
+    assert icon_code_from_url(url.format("abcd")) == ""
+
+
+def test_parse_daily():
     doc = {"daily": {
         "time": ["2026-09-23", "2026-09-24"],
-        "temperature_2m_max": [18.7, -0.6], "temperature_2m_min": [11.2, -3.9],
-        "precipitation_probability_max": [40, 80], "weather_code": [3, 3],
+        "temperature_2m_max": [18.7, -0.6], "temperature_2m_min": [11.2, -3.5],
+        "weather_code": [3, 3],
         "sunshine_duration": [3600.0, 3600.0], "daylight_duration": [43200.0, 43200.0],
-        "precipitation_sum": [0.4, 0.4], "precipitation_hours": [12.0, 12],
+        "precipitation_sum": [0.4, 0.0], "precipitation_hours": [12.0, 0.0],
         "snowfall_sum": [0.0, 0.0],
         "sunrise": ["2026-09-23T07:31", "2026-09-24T07:33"],
         "sunset": ["2026-09-23T19:39", "2026-09-24T19:37"],
         "wind_speed_10m_max": [24.9, 30.0], "wind_gusts_10m_max": [41.0, 50.0],
-        "apparent_temperature_max": [17.5, -2.5], "uv_index_max": [3.45, 99.0],
+        "apparent_temperature_max": [17.5, -2.4], "uv_index_max": [3.45, 1.0],
     }}
     today, thu = parse_om_daily(doc)
     assert (today.day_name, thu.day_name) == ("Today", "Thu")
-    assert (today.temp_max, today.temp_min, thu.temp_max, thu.temp_min) == (18, 11, 0, -3)
-    assert today.category == Category.OVERCAST      # 12.0 hours read as 0
-    assert thu.category == Category.DRIZZLE          # an integer 12 would count
+    assert (today.temp_max, today.temp_min, thu.temp_max, thu.temp_min) == (19, 11, -1, -4)
+    assert today.category == Category.DRIZZLE        # 12 hours of light precipitation
+    assert thu.category == Category.OVERCAST
     assert (today.sunrise, today.sunset) == ("07:31", "19:39")
-    assert (today.uv_max_x10, thu.uv_max_x10) == (34, 150)
-    assert (today.feels_max, thu.feels_max) == (17, -2)
+    assert (today.feels_max, thu.feels_max) == (18, -2)
+
+
+def test_recorded_evening_shows_both_remaining_trains():
+    """wall1: recorded 23 September 2026 at 21:39, when the wall (and the
+    exact port) showed one card because of the midnight comparison."""
+    folder = FIXTURES / "wall1"
+    now = datetime.fromisoformat(json.loads((folder / "meta.json").read_text())["now"])
+    snap = Collector(Settings.from_env(), FixtureFetcher(folder)).snapshot(now)
+    assert [(d.origin, d.time, d.uni_arr) for d in snap.departures] == \
+        [("CTR", "21:49", "23:10"), ("CTR", "22:49", "00:10")]
+    assert snap.weather and len(snap.forecast) == 7 and len(snap.hourly) == 24

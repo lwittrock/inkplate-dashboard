@@ -1,0 +1,8 @@
+# /etc/systemd/system/inkplate-screen-restart.service
+# Started by inkplate-screen-restart.path. Nothing else.
+[Unit]
+Description=Restart the Inkplate screen service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl restart inkplate-screen.service

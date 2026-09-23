@@ -21,6 +21,8 @@ the laptop). Next is step 3: the container on the home server and the deploy.
 | `screen/schedule.py` | When the device wakes next, OTA hint, 200 or 204, full or partial refresh |
 | `screen/telemetry.py` | The device's report: parsing, `state.json`, forwarding to HA and healthchecks.io |
 | `screen/assets/` | Fonts and icons imported from the firmware (`tools/import_gfx_assets.py`) |
+| `screen/selftest.py` | The gate a deploy must pass: renders the fixtures, checks the frame and schedule |
+| `deploy/` | CT 106: `deploy.sh` and the systemd units (installed by hand, see below) |
 | `tests/` | Unit tests; `tests/fixtures/<name>/` holds recorded API responses |
 
 Keep this folder free of `.h` and `.ino` files: CI builds a firmware release
@@ -28,7 +30,9 @@ for any pushed change to those.
 
 ## Running it
 
-Python 3.12 or newer with Pillow (`pip install -r requirements.txt`).
+Python 3.12 or newer with Pillow: `pip install pillow==11.3.0` on the laptop.
+`requirements.txt` pins the Linux wheels by hash for the server, so pip
+refuses it on Windows.
 Settings come from the environment; on the laptop put them in `local.env`
 (gitignored), using `local.env.example` as the template. The NS key is needed
 for trains; the rest works without it.
@@ -89,3 +93,18 @@ Changed on purpose since then:
 Server-side by design (see the design document): per-source caching in
 `collect.py` replaces the firmware's RTC caches, and the footer battery shows
 the device's last reported voltage.
+
+## On the server
+
+CT 106 runs the service as user `screen` from `/opt/inkplate-screen/current`,
+and deploys itself: every 5 minutes `deploy.sh` (as `screen-deploy`) fetches
+`master`, and when `server/` changed it builds a release with its own venv,
+installs from hashes, runs `python -m screen.selftest`, and only then switches
+the `current` symlink; a path unit restarts the service. So **a push to master
+that touches `server/` is live within about 5 minutes**, and one that fails
+the self-test never goes live. The firmware's CI ignores `server/`.
+
+`deploy.sh` and the unit files are copied into the container by hand, so a push
+cannot change how deploys work. After editing them here, copy them again.
+The build and operation of CT 106 are in the home-server repo,
+`runbooks/inkplate-screen.md`.

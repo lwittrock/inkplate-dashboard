@@ -1,0 +1,25 @@
+# /etc/systemd/system/inkplate-screen-deploy.service
+# One deploy run: fetch master, build and self-test a new release if server/ changed.
+[Unit]
+Description=Deploy the Inkplate screen service from GitHub
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=screen-deploy
+EnvironmentFile=/etc/inkplate-screen-deploy.env
+# git and pip look for a home; nothing is written there.
+Environment=HOME=/opt/inkplate-screen
+ExecStart=/bin/bash /usr/local/lib/inkplate-screen/deploy.sh
+TimeoutStartSec=10min
+MemoryMax=256M
+ProtectSystem=strict
+ReadWritePaths=/opt/inkplate-screen
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes

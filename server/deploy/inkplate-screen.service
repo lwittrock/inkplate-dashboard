@@ -1,0 +1,29 @@
+# /etc/systemd/system/inkplate-screen.service
+# The screen service: renders every 5 minutes, serves /v1/screen on port 8088.
+# In unit files # starts a comment only at the start of a line.
+[Unit]
+Description=Inkplate dashboard screen service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=screen
+EnvironmentFile=/etc/inkplate-screen.env
+WorkingDirectory=/opt/inkplate-screen/current
+ExecStart=/opt/inkplate-screen/current/.venv/bin/python -m screen.service
+Restart=always
+RestartSec=10
+# /var/lib/inkplate-screen, owned by screen; systemd passes it as STATE_DIRECTORY.
+StateDirectory=inkplate-screen
+MemoryMax=200M
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

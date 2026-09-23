@@ -1,1 +1,6 @@
-Pillow==11.3.0
+# Pinned by hash: an automatic deploy installs exactly what was tested.
+# Linux x86_64 wheels for CPython 3.13 (Debian 13 in CT 106). On the laptop,
+# install without hashes: pip install pillow==11.3.0
+pillow==11.3.0 \
+    --hash=sha256:f0f5d8f4a08090c6d6d578351a2b91acf519a54986c055af27e7a93feae6d3f1 \
+    --hash=sha256:13f87d581e71d9189ab21fe0efb5a23e9f28552d5be6979e84001d3b8505abe8

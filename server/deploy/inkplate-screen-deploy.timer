@@ -1,0 +1,11 @@
+# /etc/systemd/system/inkplate-screen-deploy.timer
+[Unit]
+Description=Every 5 minutes, deploy the Inkplate screen service if master changed
+
+[Timer]
+# 2 minutes past each render slot, so a restart never lands on a render.
+OnCalendar=*:2/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target

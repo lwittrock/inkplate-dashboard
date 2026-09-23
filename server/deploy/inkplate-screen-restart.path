@@ -1,0 +1,11 @@
+# /etc/systemd/system/inkplate-screen-restart.path
+# deploy.sh rewrites this file after switching releases. Restarting needs root,
+# which the deploy user does not have; this unit does it instead.
+[Unit]
+Description=Restart the Inkplate screen service after a deploy
+
+[Path]
+PathChanged=/opt/inkplate-screen/deployed
+
+[Install]
+WantedBy=multi-user.target

@@ -47,7 +47,7 @@ No NTP, no clock, no night mode, no cadence rules on the device: the server's sc
 
 **Failure path** (`failedWake`): the first failure changes nothing on the panel (e-ink keeps its picture) and retries in 10 minutes; from the second, the panel says "No Wi-Fi" or "Server down" (drawn once, full refresh); retries back off to 30, then 60 minutes. The server answers a device reporting `fail > 0` with a full redraw, even at night.
 
-**Server** (`server/`, see [server/README.md](server/README.md)): `screen/sources.py` (the APIs), `collect.py` (per-source caching), `trains.py`, `weather.py`, `headline.py`, `render.py` + `gfx.py` (draws exactly as Adafruit GFX did), `schedule.py` (wake cadence), `telemetry.py`, `service.py` (HTTP on 8088). Deploys itself from `master` when `server/` changes, after a self-test.
+**Server** (`server/`, see [server/README.md](server/README.md)): `screen/sources.py` (the APIs), `collect.py` (per-source caching), `trains.py`, `weather.py`, `headline.py`, `render.py` (the design, for the greyscale and 1-bit panel modes) + `frames.py` (the wire formats), `schedule.py` (wake cadence), `telemetry.py`, `service.py` (HTTP on 8088). Deploys itself from `master` when `server/` changes, after a self-test.
 
 ---
 
@@ -76,29 +76,27 @@ Refresh times and how long a failed source falls back to its last good copy: `PO
 
 ---
 
-## Display Layout (800×600px, 1-bit), drawn by the server
+## Display Layout (800×600px), drawn by the server
 
 ```
-y=0    ┌─ MASTHEAD: greeting + date + sun/moon arc with current dot ───┐
-y=92   ├─ thick rule (2 px) ──────────────────────────────────────────┤
-y=112  │ WEATHER  |   RAIN COMING / NEXT HOURS DRY                   │
-y=125  │ 128px icon  │  axes + rain chart (Bayer fill) OR            │
-       │ big temp °  │  24h temp curve with sunrise/sunset guides    │
-y=232  │ wind arrow + "X km/h"                                       │
-y=305  ├─ dotted divider ─────────────────────────────────────────────┤
-y=324  │ WEEK — 7 cells × 102 px, day name + 48 icon + range bar     │
-y=455  ├─ dotted divider ─────────────────────────────────────────────┤
-y=474  │ TRAINS → BREDA — 3 cards × 220 px (CTR or HS pill)          │
-y=590  └─ FOOTER: updated HH:MM + battery icon ──────────────────────┘
+y=0    ┌─ MASTHEAD: greeting + date · sun/moon on its arc, sunrise/sunset times ─┐
+y=92   ├─ rule (2 px) ──────────────────────────────────────────────────────────┤
+y=100  │ NOW: icon, temperature, feels like, wind │ NEXT 24 HOURS (night shaded)  │
+       │                                          │ or RAIN, NEXT 2 HOURS         │
+y=302  ├─ hairline ─────────────────────────────────────────────────────────────┤
+y=312  │ 7 day columns: name, icon, high (big), low (small)                     │
+y=452  ├─ hairline ─────────────────────────────────────────────────────────────┤
+y=462  │ TRAINS → TILBURG UNI: 3 columns, status · time + platform · arrival    │
+y=580  └─ footer: updated HH:MM · battery ─────────────────────────────────────┘
 ```
 
-All Y coordinates are absolute; the section comments in `render.py` annotate each band. The fonts (Inter, OFL) and icons were imported from the firmware's GFX headers and `icons.h` into `server/screen/assets/`, and `server/screen/gfx.py` reproduces Adafruit GFX's integer drawing routines, so the port matched the old wall screen pixel for pixel. New sizes for a redesign can come from TTF alongside. **Sizing:** GFX point sizes don't map 1:1 to CSS pixels: `9pt7b` cap-height ≈ 14 px, `12pt7b` ≈ 17, `18pt7b` ≈ 26, `48pt7b` ≈ 64. Glyphs outside ASCII (°, ·, →) are drawn as primitives.
+All Y coordinates are absolute; the band comments at the top of `server/screen/render.py` are the layout contract. The design (September 2026): Inter as a variable TTF at any size, Material Symbols Rounded weather icons (subset by `server/tools/subset_icons.py`), greys for secondary information, no boxes. Drawn at 3× and downsampled for the greyscale mode; for 1-bit, text without anti-aliasing and grey fills as ordered dither. Text is never lighter than grey level 2 and never smaller than 13 px (e-ink greys are less even than a screen's). `python -m screen.preview` renders it on the laptop; `tools/mockups.py` shows grey, grey with crisp small text, and 1-bit side by side. The firmware's own drawing was first ported exactly and matched the wall pixel for pixel; that port is in git history (`c9a36d2`).
 
 ---
 
 ## Build & Flash (firmware)
 
-**IDE:** Arduino IDE 2.x, board "Soldered Inkplate6" (= FQBN `Inkplate_Boards:esp32:Inkplate6V2`), partition scheme `min_spiffs`. **Library:** `Inkplate` (Soldered, 11.1.0). The firmware no longer uses ArduinoJson; CI still installs it, which is harmless. The IDE bundles `arduino-cli` (`resources/app/lib/backend/resources/arduino-cli.exe` under the IDE's install folder), which compiles the sketch from a terminal.
+**IDE:** Arduino IDE 2.x, board "Soldered Inkplate6" (= FQBN `Inkplate_Boards:esp32:Inkplate6V2`), partition scheme `min_spiffs`. **Library:** `Inkplate` (Soldered, 11.1.0). The firmware no longer uses ArduinoJson, and CI no longer installs it. The IDE bundles `arduino-cli` (`resources/app/lib/backend/resources/arduino-cli.exe` under the IDE's install folder), which compiles the sketch from a terminal.
 
 **Releases come from CI, not from your IDE** (see "OTA gotchas"). A USB flash is for bench tests only, and a bench build must set `#define OTA_SKIP 1` in the local `config.h`: otherwise the "dev" build replaces itself with the newest release on its first successful wake. `#define BENCH_MAX_SLEEP_S 60` caps each sleep so a bench session doesn't wait half an hour per wake. CI refuses to build if the `CONFIG_H` secret defines either. The checklist for the switch-over is [docs/thin-client-switchover.md](docs/thin-client-switchover.md).
 

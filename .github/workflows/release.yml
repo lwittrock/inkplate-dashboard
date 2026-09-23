@@ -60,7 +60,6 @@ jobs:
       # Verified against local Arduino IDE on 2026-05-25.
       CORE_VERSION: "8.1.0"
       INKPLATE_LIB_VERSION: "11.1.0"
-      ARDUINOJSON_VERSION: "7.4.3"
 
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +107,6 @@ jobs:
       - name: Install libraries
         run: |
           arduino-cli lib install "InkplateLibrary@${INKPLATE_LIB_VERSION}"
-          arduino-cli lib install "ArduinoJson@${ARDUINOJSON_VERSION}"
           arduino-cli lib list
 
       - name: Inject secrets and config

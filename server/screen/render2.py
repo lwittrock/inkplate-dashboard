@@ -423,36 +423,60 @@ def outlook(c: Canvas, snap: Snapshot) -> None:
 
 # --- the week (y=312-444) -------------------------------------------------------------
 
+WEEK_STYLE = "stack"      # "stack", "row", "ladder", or "pair" (the first mockup)
+
+
 def week(c: Canvas, fc: list[DayForecast]) -> None:
     days = fc[:7]
     if not days:
         c.text(LEFT, 380, "Week forecast unavailable", 17, 450, fill=c.p.text2)
         return
-    lo = min(d.temp_min for d in days) - 1
-    hi = max(d.temp_max for d in days) + 1
+    lo = min(d.temp_min for d in days)
+    hi = max(d.temp_max for d in days)
+    span = max(hi - lo, 1)
     cw = (RIGHT - LEFT) / 7
     for i, d in enumerate(days):
         cx = LEFT + cw * (i + 0.5)
         today = i == 0
-        c.text(cx, 334, d.day_name, 15.5, 700 if today else 500,
+        c.text(cx, 332, d.day_name, 15.5, 700 if today else 500,
                fill=c.p.text if today else c.p.text2, anchor="ms")
-        c.weather_icon(d.category, round(cx - 24), 344, 48, sunny=d.sunny_variant)
         hi_s, lo_s = temp_text(d.temp_max), temp_text(d.temp_min)
-        wh, wl = c.width(hi_s, 18, 650), c.width(lo_s, 18, 420)
-        x = cx - (wh + 8 + wl) / 2
-        c.text(x, 416, hi_s, 18, 650)
-        c.text(x + wh + 8, 416, lo_s, 18, 420, fill=c.p.text2)
-        # The week on one scale: where this day's range sits.
-        bl, br = cx - 38, cx + 38
-        def bx(t): return bl + (t - lo) / (hi - lo) * (br - bl)
-        c.rect(bl, 429, br, 433, c.p.faint, radius=2)
-        c.rect(bx(d.temp_min), 428, max(bx(d.temp_max), bx(d.temp_min) + 6), 434, c.p.text, radius=3)
+        if WEEK_STYLE == "stack":
+            c.weather_icon(d.category, round(cx - 24), 340, 48, sunny=d.sunny_variant)
+            c.text(cx, 416, hi_s, 21, 650, anchor="ms")
+            c.text(cx, 440, lo_s, 16, 450, fill=c.p.text2, anchor="ms")
+        elif WEEK_STYLE == "row":
+            c.weather_icon(d.category, round(cx - 24), 346, 48, sunny=d.sunny_variant)
+            bl, br = cx - 17, cx + 17
+            c.text(bl - 5, 428, lo_s, 15, 450, fill=c.p.text2, anchor="rs")
+            c.text(br + 5, 428, hi_s, 15, 650, anchor="ls")
+            bx = lambda t: bl + (t - lo) / span * (br - bl)
+            c.rect(bl, 421, br, 425, c.p.faint, radius=2)
+            c.rect(bx(d.temp_min), 420, max(bx(d.temp_max), bx(d.temp_min) + 5), 426, c.p.text, radius=3)
+        elif WEEK_STYLE == "ladder":
+            c.weather_icon(d.category, round(cx - 42), 346, 48, sunny=d.sunny_variant)
+            tx, top, bot = cx + 18, 352, 436
+            c.text(tx + 12, top + 10, hi_s, 17, 650, anchor="ls")
+            c.text(tx + 12, bot, lo_s, 15, 450, fill=c.p.text2, anchor="ls")
+            by = lambda t: bot - 4 - (t - lo) / span * (bot - top - 8)
+            c.rect(tx - 2, top, tx + 2, bot, c.p.faint, radius=2)
+            c.rect(tx - 3, by(d.temp_max), tx + 3, max(by(d.temp_min), by(d.temp_max) + 5), c.p.text, radius=3)
+        else:   # "pair": the first mockup
+            c.weather_icon(d.category, round(cx - 24), 344, 48, sunny=d.sunny_variant)
+            wh, wl = c.width(hi_s, 18, 650), c.width(lo_s, 18, 420)
+            x = cx - (wh + 8 + wl) / 2
+            c.text(x, 416, hi_s, 18, 650)
+            c.text(x + wh + 8, 416, lo_s, 18, 420, fill=c.p.text2)
+            bl, br = cx - 38, cx + 38
+            bx = lambda t: bl + (t - lo + 1) / (span + 2) * (br - bl)
+            c.rect(bl, 429, br, 433, c.p.faint, radius=2)
+            c.rect(bx(d.temp_min), 428, max(bx(d.temp_max), bx(d.temp_min) + 6), 434, c.p.text, radius=3)
 
 
 # --- trains (y=462-570) ------------------------------------------------------------------
 
 def trains(c: Canvas, snap: Snapshot) -> None:
-    c.caps(LEFT, 476, "TRAINS → BREDA")
+    c.caps(LEFT, 476, "TRAINS → TILBURG UNI")
     deps = snap.departures[:3]
     if not deps:
         msg = "No trains in the next three hours" if snap.trains_ok else "Train times unavailable"

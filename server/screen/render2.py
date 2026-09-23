@@ -58,6 +58,43 @@ MONO = Palette(text=0, text2=0, text3=0, rule=level(4), fill=level(4), faint=lev
 
 TTF = ASSETS / "ttf" / "Inter-Variable.ttf"
 
+# Weather icons. "material": Material Symbols Rounded (Apache 2.0), a variable
+# icon font drawn like text, subset to the glyphs below (fill and grade pinned
+# at 0; weight and optical size still variable). "bitmap": the firmware's
+# 1-bit icons, kept for comparison.
+ICONS = "material"
+MATERIAL_TTF = str(ASSETS / "ttf" / "MaterialSymbolsRounded-weather.ttf")
+_MATERIAL_CP = {}
+
+
+def _material_char(name: str) -> str:
+    if not _MATERIAL_CP:
+        for line in open(MATERIAL_TTF.replace(".ttf", ".codepoints"), encoding="utf-8"):
+            k, v = line.split()
+            _MATERIAL_CP[k] = chr(int(v, 16))
+    return _MATERIAL_CP[name]
+
+
+@lru_cache(maxsize=None)
+def _icon_font(px: int, weight: int) -> ImageFont.FreeTypeFont:
+    f = ImageFont.truetype(MATERIAL_TTF, px)
+    f.set_variation_by_axes([min(max(px, 20), 48), weight])   # opsz, wght
+    return f
+
+
+def material_name(cat: "Category", night: bool, sunny: bool) -> str:
+    from .model import Category as C
+    if cat == C.CLEAR:
+        return "clear_night" if night else "sunny"
+    if cat == C.PARTLY_CLOUDY:
+        return "partly_cloudy_night" if night else "partly_cloudy_day"
+    if cat == C.SNOW:
+        return "sunny_snowing" if sunny else "weather_snowy"
+    # One rain glyph: Material's light and heavy variants are bare streaks
+    # without a cloud and break the set. The headline and the rain chart say how much.
+    return {C.OVERCAST: "cloud", C.FOG: "foggy", C.DRIZZLE: "rainy", C.RAIN: "rainy",
+            C.RAIN_HEAVY: "rainy", C.THUNDERSTORM: "thunderstorm"}.get(cat, "cloud")
+
 
 @lru_cache(maxsize=None)
 def _font(px: int, weight: int) -> ImageFont.FreeTypeFont:
@@ -125,6 +162,18 @@ class Canvas:
 
     def polygon(self, pts, fill) -> None:
         self.d.polygon([(x * self.s, y * self.s) for x, y in pts], fill=fill)
+
+    def weather_icon(self, cat, x: int, y: int, box: int, night=False, sunny=False) -> None:
+        """A weather icon filling a box x 128 or 48 px square at (x, y)."""
+        if ICONS == "material":
+            f = _icon_font(round(box * 1.12 * self.s), 300 if box > 64 else 400)
+            self.d.text(((x + box / 2) * self.s, (y + box / 2) * self.s),
+                        _material_char(material_name(cat, night, sunny)), font=f,
+                        fill=self.p.text, anchor="mm")
+        elif box > 64:
+            self.icon(icon128(cat, night), x, y)
+        else:
+            self.icon(icon48(cat, sunny), x, y)
 
     def icon(self, name: str, x: int, y: int) -> None:
         img = Image.open(ASSETS / "icons" / f"{name}.png").convert("L")
@@ -219,16 +268,13 @@ def now_block(c: Canvas, snap: Snapshot, night: bool) -> None:
     if not w:
         c.text(LEFT, 200, "Current weather unavailable", 17, 450, fill=c.p.text2)
         return
-    c.icon(icon128(w.category, night), 32, 134)
+    c.weather_icon(w.category, 32, 134, 128, night=night)
     x = 186
     c.text(x - 5, 222, temp_text(w.temp), 100, 600)
     if w.feels is not None:
         c.text(x, 254, f"Feels like {temp_text(w.feels)}", 17, 450, fill=c.p.text2)
     wind_arrow(c, x + 8, 278, w.wind_bearing)
-    wx = x + 24
-    wx += c.text(wx, 284, f"{round(w.wind_kmh)} km/h", 17, 550)
-    if w.gust_kmh is not None and w.gust_kmh >= w.wind_kmh + 5:
-        c.text(wx, 284, f"  ·  gusts {round(w.gust_kmh)}", 17, 450, fill=c.p.text2)
+    c.text(x + 24, 284, f"{round(w.wind_kmh)} km/h", 17, 450, fill=c.p.text2)
 
 
 # --- now (y=100-296), right: the next 24 hours, or the rain -------------------------
@@ -390,7 +436,7 @@ def week(c: Canvas, fc: list[DayForecast]) -> None:
         today = i == 0
         c.text(cx, 334, d.day_name, 15.5, 700 if today else 500,
                fill=c.p.text if today else c.p.text2, anchor="ms")
-        c.icon(icon48(d.category, d.sunny_variant), round(cx - 24), 344)
+        c.weather_icon(d.category, round(cx - 24), 344, 48, sunny=d.sunny_variant)
         hi_s, lo_s = temp_text(d.temp_max), temp_text(d.temp_min)
         wh, wl = c.width(hi_s, 18, 650), c.width(lo_s, 18, 420)
         x = cx - (wh + 8 + wl) / 2
@@ -421,13 +467,13 @@ def trains(c: Canvas, snap: Snapshot) -> None:
 
 
 def train(c: Canvas, x: float, right: float, d: Departure) -> None:
-    """Three rows: what's wrong (or "on time", and "via HS" when the picker
+    """Three rows: what's wrong (or "on time", and "from HS" when the picker
     swapped in a Den Haag HS train), the time and platform, the arrival."""
     rx = x
     if d.origin == "HS":
-        w = c.width("via HS", 12, 700) + 12
+        w = c.width("from HS", 12, 700) + 12
         c.rect(x, 489, x + w, 506, c.p.text, radius=3)
-        c.text(x + 6, 502, "via HS", 12, 700, fill=255)
+        c.text(x + 6, 502, "from HS", 12, 700, fill=255)
         rx += w + 8
     if d.cancelled:
         c.text(rx, 502, "cancelled", 14.5, 700)

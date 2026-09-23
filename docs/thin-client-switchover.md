@@ -35,13 +35,17 @@ shows the same dashboard as `preview.png`. In HA, `sensor.inkplate_firmware` rea
 
 The mockups were judged on a phone; this is the panel. Look at the greyscale frame from a normal
 viewing distance: the edges of the big temperature and the train times, the grey text, the
-shaded night in the chart, the grey rain fill. Then switch the service to 1-bit, inside CT 106:
-`SCREEN_FORMAT=mono` in `/etc/inkplate-screen.env` and `systemctl restart inkplate-screen`.
-Wait a minute.
+shaded night in the chart, the grey rain fill, and the small text (labels, "platform", the chart's
+times). Then two variants, one wake each, inside CT 106 in `/etc/inkplate-screen.env`, each
+followed by `systemctl restart inkplate-screen` and a minute's wait:
 
-**Done when** the log shows `Screen: m1z` and `inflate status 0, 60000 bytes`, the panel shows the
-1-bit version, and you have chosen. Put `SCREEN_FORMAT` back to `grey` or leave it at `mono`;
-either way it is a setting of the service, not of the firmware.
+- `SMALL_TEXT=crisp`: greyscale, but text under 14 px without anti-aliasing. On e-paper, smoothed
+  small type can look light and blurry; crisp can read better from a distance.
+- `SCREEN_FORMAT=mono`: the 1-bit version.
+
+**Done when** the log shows `Screen: m1z` and `inflate status 0, 60000 bytes` for the 1-bit wake,
+and you have chosen among the three. Leave the two settings as chosen; they belong to the service,
+not the firmware.
 
 ## 3. The second wake
 

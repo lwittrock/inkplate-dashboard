@@ -98,4 +98,5 @@ def pick_current(stations: list[Station], now: datetime, lat: float, lon: float,
     else:
         cat, src = candidates[0]
 
-    return WeatherNow(temp=src.temp, wind_kmh=src.wind_ms * 3.6, category=cat, wind_bearing=src.bearing)
+    return WeatherNow(temp=src.temp, wind_kmh=src.wind_ms * 3.6, category=cat, wind_bearing=src.bearing,
+                      feels=src.feels, gust_kmh=src.gust_ms * 3.6 if src.gust_ms is not None else None)

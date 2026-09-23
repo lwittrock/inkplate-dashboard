@@ -78,6 +78,8 @@ class Station:
     temp: float
     wind_ms: float
     bearing: int                # degrees the wind comes from
+    feels: float | None = None
+    gust_ms: float | None = None
 
 
 @dataclass
@@ -86,6 +88,8 @@ class WeatherNow:
     wind_kmh: float
     category: Category
     wind_bearing: int
+    feels: float | None = None
+    gust_kmh: float | None = None
 
 
 class RainSample(NamedTuple):
@@ -102,6 +106,7 @@ class Snapshot:
     hourly: list[float] = field(default_factory=list)             # next 24 h, from this hour
     forecast: list[DayForecast] = field(default_factory=list)
     departures: list[Departure] = field(default_factory=list)
+    trains_ok: bool = True      # False: NS gave nothing at all, as opposed to "no trains soon"
     battery_v: float | None = None
     firmware: str | None = None                                   # drawn in the footer when set
 

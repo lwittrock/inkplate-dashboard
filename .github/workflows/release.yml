@@ -13,6 +13,9 @@ on:
       - '**.ino'
       - '**.h'
       - 'Fonts/**'
+      # The screen service deploys itself (server/README.md); nothing under
+      # server/ may ever cut a firmware release, even a stray .h file.
+      - '!server/**'
   workflow_dispatch:
 
 permissions:

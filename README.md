@@ -1,103 +1,123 @@
 # Inkplate 6 Weather & Train Dashboard
 
-An e-paper dashboard for my commute — wakes every 15 minutes, fetches live weather (Buienradar) and the next three trains from Den Haag to Tilburg Universiteit (NS), draws a full-screen editorial layout, then deep-sleeps until the next cycle.
+An e-paper dashboard for my commute: current weather, a 2-hour rain chart or 24-hour temperature
+curve, the week ahead, and the next three trains from Den Haag to Tilburg Universiteit, in a
+newspaper-style 1-bit layout on an Inkplate 6 behind glass on the wall.
 
-Personal hobby project, sharing in case it's useful as a reference. Not actively supporting forks — if you want to adapt it to your city/route, expect to read the code.
+Personal hobby project, shared in case it's useful as a reference. Not actively supporting forks;
+if you want to adapt it to your city or route, expect to read the code.
+
+> **Status: server-rendered since the thin client's release** (Phase 10.4, checklist in
+> [docs/thin-client-switchover.md](docs/thin-client-switchover.md)). The previous self-contained
+> firmware, which fetched and drew everything itself, is in the git history before that merge.
+
+---
+
+## How it works
+
+Two halves, one repo, because they share one contract:
+
+- **The server** ([`server/`](server/), Python) runs on a small home server. Every 5 minutes it
+  fetches Open-Meteo, Buienradar and NS, runs the train picker and the weather-station vote, and
+  draws the whole 800×600 black-and-white frame. It also decides when the device should wake next.
+- **The device** (the `*.ino` files, about 300 lines) wakes, joins Wi-Fi, makes one plain-HTTP
+  request on the LAN, draws the frame it gets, and deep-sleeps for as long as the reply says. The
+  request carries its battery level and firmware version, which the server passes on to Home
+  Assistant and a health check.
+
+Why: Wi-Fi time was ~92% of the battery budget, and five HTTPS calls per wake became one small LAN
+request (modelled: about 40 days per charge becomes 3 to 5 months; to be measured). And a layout or
+logic change no longer means a firmware update to a device behind glass. The reasoning, the
+contract and the battery figures are in
+[docs/server-rendering-design.md](docs/server-rendering-design.md).
 
 ---
 
 ## What's on the screen
 
-Editorial newspaper-style layout, top to bottom:
+- **Masthead**: an editorial greeting from today's weather and the day ("Bright Saturday", "Wet and
+  windy Friday"), with specials for new year, Koningsdag, the solstices, Christmas and so on; the
+  date; and a sun or moon arc showing where we are between sunrise and sunset.
+- **Current weather**: a 128 px icon, the temperature, wind speed and direction. Current
+  conditions come from a vote among nearby KNMI stations, so one faulty sensor can't set the icon.
+- **Right of the weather**: a 2-hour rain chart when rain is coming, else a 24-hour temperature
+  curve with sunrise and sunset marked.
+- **Week strip**: seven days, each with an icon and a min/max range bar.
+- **Trains**: three cards from Den Haag Centraal to Tilburg Universiteit, with platform, delay,
+  the transfer at Breda and the arrival time. When a Centraal train is cancelled or badly late, a
+  clean alternative from Den Haag HS takes its card, marked with a black "DH HS" pill.
+- **Footer**: when it was drawn, and the battery.
 
-- **Masthead** — an editorial-headline greeting that mixes today's weather and the day of the week ("Rainy Tuesday", "Bright Saturday", "Foggy Monday"), with date-aware specials for new year, Christmas, Koningsdag, the equinoxes/solstices, etc. Today's date is on a second line, and a sun/moon arc on the right shows the current position between sunrise and sunset.
-- **Current weather** — a 128 px weather icon, the temperature in a 48 pt hero number with a degree ring, and a wind indicator (km/h + cardinal direction + arrow).
-- **Right of weather** — either a **2-hour rain chart** with a Bayer-dithered fill (when Buienradar nowcast shows rain incoming), or a **24-hour temperature curve** with sunrise/sunset guides (when the next two hours are dry).
-- **Week strip** — 7 cells, each showing day name, a 48 px forecast icon, and a min/max temperature range bar.
-- **Departures** — 3 train cards for Den Haag → Tilburg Universiteit, each with departure time, track number, transfer status at Breda, arrival time at the destination, and a CTR/HS pill marking which Den Haag station it leaves from. The picker substitutes a Den Haag HS train when a Centraal slot is cancelled or badly delayed.
-- **Footer** — last-updated time and a battery icon.
+`python -m screen.preview` in `server/` renders the current screen on a laptop.
 
-Renders in pure 1-bit black and white. A full refresh happens once an hour to clear ghosting; partial refreshes the rest of the time.
+---
+
+## Where things are written down
+
+Each fact has one home; the others point to it.
+
+| Question | Document |
+|---|---|
+| What is this, how is it built, where to start | this README |
+| Why this design, and **the contract** between device and server | [docs/server-rendering-design.md](docs/server-rendering-design.md) |
+| The server code: layout, running it, testing, how it deploys | [server/README.md](server/README.md) |
+| The firmware: rules, OTA, CI, and the gotchas that cost time | [CLAUDE.md](CLAUDE.md) |
+| The one-off bench test and release of the thin client | [docs/thin-client-switchover.md](docs/thin-client-switchover.md) |
+| Battery figures | [docs/power-audit.md](docs/power-audit.md) |
+| The home server side: the container, its firewall, the Home Assistant sensors, the checks | the private home-server docs repo, `runbooks/inkplate-screen.md` |
+| How the choice was made (historical) | [docs/homeserver-integration-handoff.md](docs/homeserver-integration-handoff.md) |
 
 ---
 
 ## Hardware
 
-- **[Inkplate 6](https://inkplate.io/)** — ESP32-based, 800×600 1-bit e-ink display (Soldered Electronics)
-- USB-C cable for flashing
-- Optional: 3.7V LiPo battery (the Inkplate has an onboard charger)
-
-That's it. No extra wiring.
-
----
-
-## Flashing
-
-You only flash via USB **once**. After that, the device pulls firmware updates over the air from this repo's GitHub releases — see "Updates" below.
-
-1. **Install the Arduino IDE 2.x** and the Inkplate board package (board manager URL: `https://raw.githubusercontent.com/SolderedElectronics/Dasduino-Board-Definitions-for-Arduino-IDE/master/package_Dasduino_Boards_index.json`).
-2. **Install libraries** via the IDE library manager:
-   - `InkplateLibrary` (by Soldered Electronics)
-   - `ArduinoJson` **v7** (the sketch uses the v7 `JsonDocument` API; v6 will not compile)
-3. **Copy `config.h.example` → `config.h`** and edit your location, station codes, and any other constants you care about.
-4. **Create `secrets.h`** with your credentials:
-   ```cpp
-   const char* WIFI_SSID     = "your-network";
-   const char* WIFI_PASSWORD = "your-password";
-   const char* NS_API_KEY    = "your-ns-api-key";
-   ```
-   You'll need a free API key from [NS API portal](https://apiportal.ns.nl/) (the Reisinformatie subscription works for v3).
-5. **Select board** "Soldered Inkplate6" (NOT "e-radionica.com Inkplate6" — see [CLAUDE.md](CLAUDE.md) gotcha note).
-6. **Select Partition Scheme** → "Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)". This is required so the chip has two app slots and OTA can ever work. Without it, the device runs fine but is stuck on USB-only updates forever.
-7. **Open `Dashboard.ino` in Arduino IDE.** All `.ino` files in the folder are compiled together.
-8. **Pick your COM port, hit Upload.**
-
-(Optional) Set `#define DEBUG_LOG 1` in `config.h` to get serial logs at 115200 baud.
+- **[Inkplate 6](https://inkplate.io/)**: ESP32, 800×600 1-bit e-ink display (Soldered Electronics),
+  with a 3.7 V LiPo on its onboard charger.
+- **A small always-on machine on the LAN** for the server half; here a Proxmox container with
+  256 MB of RAM.
 
 ---
 
-## Updates (OTA)
+## Updates
 
-Once the device is on the wall and the initial flash has the OTA-capable partition scheme, you never need physical access again. Editing the dashboard becomes:
-
-```sh
-git push          # any push to master that touches *.ino/*.h/Fonts/** auto-releases
-```
-
-GitHub Actions (see [`.github/workflows/release.yml`](.github/workflows/release.yml)) computes the next tag (`v<YYYY.MM.DD>-NN`, NN auto-incremented per UTC day), builds the binary, publishes it as a release asset, and updates the `firmware-latest` manifest. The device checks for a new version once per day (shortly after midnight Amsterdam time) by fetching `version.txt` from the `firmware-latest` branch. If newer, it downloads + flashes + reboots — all while the user is asleep, giving any new firmware ~6 hours to soak before morning.
-
-Opt out of a single release with `[skip release]` in the commit message. Docs-only commits don't trigger a release (path filter excludes them). Force a rebuild without a code change via the workflow_dispatch button on the Actions page.
-
-App-level rollback catches crash loops: if a new firmware fails to complete `setup()` three boots in a row, the device reverts to the previous partition. Silent misbehaviour (boots but renders wrong content) isn't caught — local USB test before pushing is the only mitigation.
-
-See [CLAUDE.md](CLAUDE.md) — sections "OTA gotchas", "OTA design decisions", "OTA out of scope" — for the architecture, design rationale, and known limitations.
-
-CI requires two GitHub Actions secrets named `CONFIG_H` and `SECRETS_H` containing the whole-file contents of `config.h` and `secrets.h` respectively — CI is the source of truth for what gets shipped, not your local files.
-
----
-
-For everything else — architecture, render pipeline, gotchas — see [CLAUDE.md](CLAUDE.md). It's written for an LLM but reads fine for humans and is the most up-to-date design doc.
+- **Server:** a push to `master` that touches `server/` is live on the home server within about 5
+  minutes, if its self-test passes; a failing one never goes live. A GitHub workflow runs the full
+  server tests on the same push.
+- **Firmware:** a push to `master` that touches `*.ino`, `*.h` or `Fonts/` builds a release
+  (GitHub Actions, [.github/workflows/release.yml](.github/workflows/release.yml)), which the
+  device installs by itself shortly after midnight. App-level rollback reverts a release that
+  keeps failing to reach Wi-Fi. `[skip release]` in the commit message skips one. CI builds from
+  the `CONFIG_H` and `SECRETS_H` Actions secrets, not from local files.
+- **Flashing by USB** is needed once (partition scheme "Minimal SPIFFS", board "Soldered
+  Inkplate6") and for bench tests. See [CLAUDE.md](CLAUDE.md), "Build & Flash", before doing
+  either: a local build replaces itself with the latest release unless told not to.
 
 ---
 
 ## Attribution
 
-- **[Inter](https://rsms.me/inter/)** by Rasmus Andersson — UI typeface, used under the SIL Open Font License 1.1. License text in [Fonts/OFL.txt](Fonts/OFL.txt). TTF→GFX conversion done via [rop.nl/truetype2gfx](https://rop.nl/truetype2gfx/).
-- **[Buienradar](https://www.buienradar.nl/)** — current conditions (KNMI station observations) and 2-hour rain nowcast. Free; attribution required for commercial use, which this isn't.
-- **[NS API](https://apiportal.ns.nl/)** — train departures via the Reisinformatie v3 Trip Planner endpoint.
-- **[Open-Meteo](https://open-meteo.com/)** — 24h hourly temperature curve and 7-day forecast. Free, no key required.
+- **[Inter](https://rsms.me/inter/)** by Rasmus Andersson, used under the SIL Open Font License 1.1
+  ([Fonts/OFL.txt](Fonts/OFL.txt)). Converted to GFX fonts via
+  [rop.nl/truetype2gfx](https://rop.nl/truetype2gfx/).
+- **[Buienradar](https://www.buienradar.nl/)**: KNMI station observations and the 2-hour rain
+  nowcast. Free; attribution required for commercial use, which this isn't.
+- **[NS API](https://apiportal.ns.nl/)**: trains, via the Reisinformatie v3 Trip Planner.
+- **[Open-Meteo](https://open-meteo.com/)**: the hourly curve and the 7-day forecast.
 - **[Inkplate](https://inkplate.io/)** hardware and library by Soldered Electronics.
 
 ---
 
 ## Security caveats
 
-- All HTTPS calls use `WiFiClientSecure::setInsecure()` — no certificate validation. Acceptable for read-only public APIs on a private network; not acceptable if you adapt this to send anything sensitive.
-- Your NS API key sits in `secrets.h` in plaintext on the device flash. Treat the device as physically trusted; if someone has it they can read the key.
+- The device's request is plain HTTP on the home LAN: the picture and the battery report are not
+  secret, and TLS handshakes were what drained the battery. Any device on the LAN could send a fake
+  battery report.
+- The firmware update check uses `setInsecure()`: no certificate validation.
+- The NS API key lives on the server, not on the device.
 
 ---
 
 ## License
 
-Code: MIT — see [LICENSE](LICENSE).
-Inter font files in [Fonts/](Fonts/): SIL Open Font License 1.1 — see [Fonts/OFL.txt](Fonts/OFL.txt).
+Code: MIT, see [LICENSE](LICENSE). Inter font files: SIL Open Font License 1.1, see
+[Fonts/OFL.txt](Fonts/OFL.txt) and [server/screen/assets/fonts/OFL.txt](server/screen/assets/fonts/OFL.txt).

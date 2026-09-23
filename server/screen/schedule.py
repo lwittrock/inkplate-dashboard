@@ -26,7 +26,9 @@ OFF_PEAK = timedelta(minutes=30)
 RENDER_SLOT = timedelta(minutes=5)
 LAND_AFTER_SLOT = timedelta(seconds=30)
 MIN_SLEEP = timedelta(minutes=5)   # the device clamps X-Sleep to at least 300 s
-FULL_REFRESH_EVERY = 4    # partial refreshes in between leave ghosting; clear it once an hour at peak
+# Partial refreshes leave ghosting; a full one every 4th wake clears it. See
+# refresh_mode: on today's device every refresh is full anyway.
+FULL_REFRESH_EVERY = 4
 
 
 @dataclass(frozen=True)
@@ -91,8 +93,14 @@ def plan(now: datetime, *, failing: bool, ota_sent_for: date | None) -> Plan:
 
 
 def refresh_mode(*, wake: int | None, failing: bool, new_firmware: bool) -> str:
-    """"full" clears ghosting (every 4th wake, as FULL_REFRESH_EVERY did),
-    replaces a "Server down" screen, and greets new firmware; else "partial"."""
+    """"full" clears ghosting (every 4th wake), replaces a "Server down"
+    screen, and greets new firmware; else "partial".
+
+    On the device this is a request, not a promise: the Inkplate library does
+    a full refresh on the first update after every boot, and every wake is a
+    boot, so "partial" has never taken effect (found 23 September 2026, see
+    CLAUDE.md). Kept for a real partial refresh, which needs the device to
+    know the frame on the panel: docs/server-rendering-design.md, "Later"."""
     if failing or new_firmware or wake is None or wake % FULL_REFRESH_EVERY == 0:
         return "full"
     return "partial"

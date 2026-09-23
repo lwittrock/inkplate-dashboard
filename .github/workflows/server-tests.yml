@@ -1,0 +1,39 @@
+name: Server tests
+
+# The screen service in server/ deploys itself to CT 106 within minutes of a
+# push to master, gated only by its own self-test. This runs the full unit
+# tests as well, on every push and pull request that touches server/, so a
+# red X on GitHub shows up before or alongside the deploy.
+on:
+  push:
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-tests.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Debian 13's Python, as in CT 106.
+          python-version: '3.13'
+      - name: Install
+        # The same hash-pinned Pillow the deploy installs, plus pytest.
+        run: |
+          pip install --require-hashes -r requirements.txt
+          pip install pytest
+      - name: Unit tests
+        run: python -m pytest -q
+      - name: Self-test (the deploy's gate)
+        run: python -m screen.selftest

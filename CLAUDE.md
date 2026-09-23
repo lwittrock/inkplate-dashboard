@@ -117,10 +117,10 @@ All Y coordinates are absolute; the section comments in `render.py` annotate eac
 ## Working with Claude Code
 
 - **Boot-path discipline — the whole firmware is boot path now.** The device is behind glass. Any change that stops a wake from reaching `markFirmwareValid()` triggers app-level rollback at best and needs a physical reflash at worst. Every firmware change gets a USB bench test (with `OTA_SKIP`) before it goes to `master`. Layout and logic changes belong in `server/`, which deploys without touching the device.
-- **Pushing to `master`:** firmware changes (`*.ino`, `*.h`, `Fonts/**`) build a release the device installs after midnight; `server/` changes are live on CT 106 within ~5 minutes if `screen.selftest` passes. Keep `server/` free of `.h` and `.ino` files. A commit touching both deploys twice, at different times: the contract must stay backward compatible.
+- **Pushing to `master`:** firmware changes (`*.ino`, `*.h`, `Fonts/**`) build a release the device installs after midnight; `server/` changes are live on CT 106 within ~5 minutes if `screen.selftest` passes, and `server-tests.yml` runs the full server tests on GitHub. The release workflow excludes `server/**` explicitly. A commit touching both deploys twice, at different times: the contract must stay backward compatible.
 - **RTC state needs a magic sentinel and a layout-bump discipline.** `RTC_DATA_ATTR` variables survive deep sleep but not a power loss or an OTA reboot. `D_OTA.ino` guards its state with `OTA_RTC_MAGIC` (now `0xC0FFEE47`; `42` was the old layout, `44`–`46` the old caches: don't reuse). **If you change the layout of the OTA RTC state, bump the magic in the same commit.** The thin client's other RTC values (`wakeCounter`, `failStreak`, `shownMessage`, `prevAwakeMs`, `prevWifiMs`) are safe at zero and need none.
 - **Memory:** the 60,000-byte frame does not fit in static RAM (`.dram0.bss` overflows); it is `ps_malloc`'d in PSRAM. Prefer `char buf[N]` + `snprintf` over `String` on the heap.
-- **1-bit display:** `display.display()` is a full refresh (~1–2 s, flashes); `partialUpdate()` in between. The server decides which (`X-Refresh`): full every 4th wake, after a failure streak, and on new firmware.
+- **1-bit display, and why every refresh is full.** `display.display()` is a full refresh (~1–2 s, flashes). **`partialUpdate()` after deep sleep is a full refresh too** (found 23 September 2026): the library (11.1.0, `Inkplate6Driver.cpp`) sets `_blockPartial` on every boot and clears it only after a full refresh, and every wake is a boot. So the server's `X-Refresh: partial` has no effect today, and never did in the old firmware either; the panel has never ghosted. A real partial refresh needs `partialUpdate(true)` with the previous frame loaded first: a lever to decide with measured data (design doc, "Later").
 - **Pixel-accurate layout** lives in `server/screen/render.py`: treat its band comments as the layout contract, and check `python -m screen.preview` output before pushing.
 
 ---
@@ -194,6 +194,6 @@ These were discovered during integration spikes and are not derivable from the c
 - TLS cert pinning — small power win, big code/maintenance cost.
 - CPU clock below 80 MHz — causes Wi-Fi instability.
 - Region-targeted partial refresh — ghosting risk with Bayer-dithered fills is too high.
-- Full refresh every 8th wake instead of every 4th — evaluated 2026-07-26 and rejected: ~0.3 mAh/day against ghosting accumulation on the Bayer-dithered rain chart. Now a server constant (`FULL_REFRESH_EVERY` in `schedule.py`).
+- Full refresh every 8th wake instead of every 4th — evaluated 2026-07-26 and rejected (~0.3 mAh/day against ghosting on the Bayer-dithered rain chart). Moot, as it turned out: every refresh is full (see the 1-bit display note). `FULL_REFRESH_EVERY` lives on as a server constant for a future real partial refresh.
 - Sleep current optimization — ~30–40 µA is already near the floor for Inkplate 6's onboard regulators.
 - **Next lever, only if HA's `wifi_ms` sensor shows it matters:** keep the access point's BSSID and channel in RTC and pass them to `WiFi.begin()` to skip the scan.

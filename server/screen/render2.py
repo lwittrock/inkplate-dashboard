@@ -51,7 +51,16 @@ class Palette:
     faint: int    # the lightest tint (night in the chart, bar tracks)
 
 
-GREY = Palette(text=0, text2=level(2), text3=level(3), rule=level(5), fill=level(4), faint=level(6))
+# E-ink greys are less even than a screen's, so hierarchy comes from size and
+# weight; text is never lighter than level 2, and the light greys are only for
+# fills and hairlines.
+GREY = Palette(text=0, text2=level(1), text3=level(2), rule=level(5), fill=level(4), faint=level(6))
+
+# With crisp_small, text below this size is drawn without anti-aliasing even
+# in greyscale: anti-aliased small type can look light and blurry on e-paper,
+# while large type and curves gain from the smoothing. The service's
+# SMALL_TEXT setting chooses; the real panel decides which reads better.
+CRISP_BELOW = 14
 # 1-bit: text stays black whatever its role (dithered text is unreadable);
 # fills and hairlines keep their grey and become dither patterns.
 MONO = Palette(text=0, text2=0, text3=0, rule=level(4), fill=level(4), faint=level(6))
@@ -110,13 +119,15 @@ def temp_text(t: float) -> str:
 
 
 class Canvas:
-    def __init__(self, mono: bool) -> None:
+    def __init__(self, mono: bool, crisp_small: bool = False) -> None:
         self.mono = mono
+        self.crisp_below = CRISP_BELOW if crisp_small and not mono else 0
         self.s = 1 if mono else 3                   # supersampling for anti-aliasing
         self.p = MONO if mono else GREY
         self.img = Image.new("L", (W * self.s, H * self.s), 255)
         self.d = ImageDraw.Draw(self.img)
         self.d.fontmode = "1" if mono else "L"
+        self.crisp: list = []      # small text for grey(): (x, y, s, size, weight, fill, anchor)
 
     # --- helpers in screen pixels ---------------------------------------------
 
@@ -125,24 +136,26 @@ class Canvas:
 
     def text(self, x, y, s, size, weight=400, fill=None, anchor="ls") -> float:
         """Draw at a baseline; returns the width in screen pixels."""
+        fill = self.p.text if fill is None else fill
+        if size < self.crisp_below:
+            self.crisp.append((x, y, s, size, weight, fill, anchor))
+            return _font(round(size), weight).getlength(s)
         f = self.font(size, weight)
-        self.d.text((x * self.s, y * self.s), s, font=f,
-                    fill=self.p.text if fill is None else fill, anchor=anchor)
+        self.d.text((x * self.s, y * self.s), s, font=f, fill=fill, anchor=anchor)
         return self.d.textlength(s, font=f) / self.s
 
     def width(self, s, size, weight=400) -> float:
+        if size < self.crisp_below:
+            return _font(round(size), weight).getlength(s)
         return self.d.textlength(s, font=self.font(size, weight)) / self.s
 
-    def caps(self, x, y, s, size=11.5, weight=600, fill=None, tracking=0.14, right=False) -> None:
+    def caps(self, x, y, s, size=13, weight=600, fill=None, tracking=0.12, right=False) -> None:
         """Letter-spaced capitals for section labels."""
-        f = self.font(size, weight)
         gap = size * tracking
-        total = sum(self.d.textlength(ch, font=f) / self.s for ch in s) + gap * (len(s) - 1)
+        total = sum(self.width(ch, size, weight) for ch in s) + gap * (len(s) - 1)
         cx = x - total if right else x
         for ch in s:
-            self.d.text((cx * self.s, y * self.s), ch, font=f,
-                        fill=self.p.text3 if fill is None else fill, anchor="ls")
-            cx += self.d.textlength(ch, font=f) / self.s + gap
+            cx += self.text(cx, y, ch, size, weight, fill=self.p.text3 if fill is None else fill) + gap
 
     def line(self, pts, width=1.0, fill=None) -> None:
         self.d.line([(x * self.s, y * self.s) for x, y in pts],
@@ -185,7 +198,12 @@ class Canvas:
 
     def grey(self) -> Image.Image:
         img = self.img.resize((W, H), Image.BOX) if self.s != 1 else self.img
-        return img.point(lambda v: level(round(v / 255 * 7)))
+        img = img.point(lambda v: level(round(v / 255 * 7)))
+        d = ImageDraw.Draw(img)
+        d.fontmode = "1"
+        for x, y, s, size, weight, fill, anchor in self.crisp:
+            d.text((round(x), round(y)), s, font=_font(round(size), weight), fill=fill, anchor=anchor)
+        return img
 
     def mono_image(self) -> Image.Image:
         """Ordered (Bayer 4x4) dither: pure black and white stay exact."""
@@ -378,7 +396,7 @@ def rain_chart(c: Canvas, snap: Snapshot) -> None:
     for mm, label in ((2.5, "moderate"), (10.0, "heavy")):
         y = y_of(mm)
         c.line([(X0, y), (X1, y)], 1, c.p.rule)
-        c.text(X1, y - 4, label, 12, 450, fill=c.p.text3, anchor="rs")
+        c.text(X1, y - 4, label, 13, 450, fill=c.p.text3, anchor="rs")
 
     pts = [(X0 + i / (n - 1) * (X1 - X0), y_of(s.mmh)) for i, s in enumerate(rain)]
     curve = [(x, min(y, YB)) for x, y in catmull_rom(pts)]
@@ -495,9 +513,9 @@ def train(c: Canvas, x: float, right: float, d: Departure) -> None:
     swapped in a Den Haag HS train), the time and platform, the arrival."""
     rx = x
     if d.origin == "HS":
-        w = c.width("from HS", 12, 700) + 12
+        w = c.width("from HS", 13, 700) + 12
         c.rect(x, 489, x + w, 506, c.p.text, radius=3)
-        c.text(x + 6, 502, "from HS", 12, 700, fill=255)
+        c.text(x + 6, 502, "from HS", 13, 700, fill=255)
         rx += w + 8
     if d.cancelled:
         c.text(rx, 502, "cancelled", 14.5, 700)
@@ -510,7 +528,7 @@ def train(c: Canvas, x: float, right: float, d: Departure) -> None:
     if d.cancelled:
         c.line([(x - 2, 528), (x + tw + 2, 528)], 2.6)
     c.text(right, 541, d.track, 24, 650, anchor="rs")
-    c.text(right - c.width(d.track, 24, 650) - 6, 541, "platform", 12.5, 450,
+    c.text(right - c.width(d.track, 24, 650) - 6, 541, "platform", 13, 450,
            fill=c.p.text3, anchor="rs")
 
     if d.cancelled:
@@ -543,8 +561,8 @@ def footer(c: Canvas, snap: Snapshot) -> None:
 
 # --- the whole screen -------------------------------------------------------------------------
 
-def draw(snap: Snapshot, mono: bool) -> Canvas:
-    c = Canvas(mono)
+def draw(snap: Snapshot, mono: bool, crisp_small: bool = False) -> Canvas:
+    c = Canvas(mono, crisp_small)
     night = is_night(snap)
     masthead(c, snap, night)
     now_block(c, snap, night)
@@ -557,8 +575,8 @@ def draw(snap: Snapshot, mono: bool) -> Canvas:
     return c
 
 
-def render_grey(snap: Snapshot) -> Image.Image:
-    return draw(snap, mono=False).grey()
+def render_grey(snap: Snapshot, crisp_small: bool = False) -> Image.Image:
+    return draw(snap, mono=False, crisp_small=crisp_small).grey()
 
 
 def render_mono(snap: Snapshot) -> Image.Image:

@@ -38,6 +38,7 @@ class Settings:
     buienradar_max_candidates: int
     show_version_footer: bool
     screen_format: str          # "grey" or "mono": what to send a device that can draw both
+    crisp_small: bool           # greyscale: small text without anti-aliasing (SMALL_TEXT=crisp)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -54,4 +55,5 @@ class Settings:
             buienradar_max_candidates=int(e("BUIENRADAR_MAX_CANDIDATES", "6")),
             show_version_footer=e("SHOW_VERSION_FOOTER", "0") == "1",
             screen_format="mono" if e("SCREEN_FORMAT", "grey").strip().lower() == "mono" else "grey",
+            crisp_small=e("SMALL_TEXT", "smooth").strip().lower() == "crisp",
         )

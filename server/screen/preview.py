@@ -46,6 +46,7 @@ def main() -> None:
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--mono", action="store_true", help="the 1-bit panel mode")
     mode.add_argument("--old", action="store_true", help="the first design, ported from the firmware")
+    ap.add_argument("--crisp", action="store_true", help="greyscale with crisp small text")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -77,7 +78,7 @@ def main() -> None:
         img = render2.render_mono(snap)
         frame = frames.pack_mono(img)
     else:
-        img = render2.render_grey(snap)
+        img = render2.render_grey(snap, crisp_small=args.crisp)
         frame = frames.pack_grey(img)
 
     if args.scale > 1:

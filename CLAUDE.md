@@ -2,190 +2,126 @@
 
 ## Project Overview
 
-E-paper weather + train dashboard running on an **Inkplate 6** (ESP32-based, 800×600px 1-bit e-ink display). The device wakes every 15 minutes, fetches live data, renders a full-screen editorial layout, then deep-sleeps until the next cycle. Night mode (23:00–07:00) skips data fetching and sleeps through the night.
+E-paper weather + train dashboard on an **Inkplate 6** (ESP32, 800×600 1-bit e-ink), mounted behind glass on the wall. Since the thin client (design: [docs/server-rendering-design.md](docs/server-rendering-design.md)) the work is split in two:
 
-**Location:** Delft, Netherlands
-**Origin stations:** Den Haag Centraal (GVC) and Den Haag HS (GV)
-**Destination:** Tilburg Universiteit (TBU) — both origins queried via NS Trip Planner v3, a per-slot picker substitutes *clean* (≤ 2-leg) HS trips when a Centraal slot is cancelled or significantly delayed. See "Train picker policy" below for the full rules.
+- **The server** (`server/`, Python, runs in CT 106 on the home server at `192.168.1.212`) fetches weather and trains, runs the train picker and the Buienradar vote, draws the whole 800×600 frame every 5 minutes, and decides when the device wakes next.
+- **The firmware** (`*.ino`, about 300 lines) wakes, connects Wi-Fi, makes **one plain-HTTP request** on the LAN, draws the frame it gets, and deep-sleeps for as long as the reply says. The request reports battery, firmware and Wi-Fi signal, which the server forwards to Home Assistant and healthchecks.io.
 
-**Design source of truth:** the rendered display itself, plus the absolute Y coordinates and section comments in [C_Display.ino](C_Display.ino). An earlier SVG mockup (`design/mockup.html`) seeded the layout but is no longer maintained.
+**Location:** Delft / Den Haag, Netherlands. **Trains:** Den Haag Centraal (GVC) and Den Haag HS (GV) to Tilburg Universiteit (TBU); see "Train picker policy" below.
+
+**Design source of truth:** the rendered frame, drawn by [server/screen/render.py](server/screen/render.py), whose band comments are the layout contract. `python -m screen.preview` in `server/` renders it on the laptop.
+
+**The home server side** (CT 106's build, its firewall, the HA sensors, the checks) is documented in the `homeserver-docs` repo: `runbooks/inkplate-screen.md`, Phase 10 in its `plan.md`.
 
 ---
 
 ## Architecture
 
-The sketch is split into four `.ino` files (all compiled together by Arduino IDE):
+**Firmware** (all `.ino` files compile together):
 
 ```
-Dashboard.ino        — Entry point: data structures, setup(), loop()
-A_Calculations.ino   — Weather categorisation, cardinal compass, ISO 8601 parse,
-                       pickDepartures (per-slot CTR/HS picker)
-B_Network.ino        — WiFi, NTP, Open-Meteo, NS Trip Planner v3
-C_Display.ino        — All rendering: fonts, icons, drawing helpers, sections
+Dashboard.ino   — setup(): the whole wake, the failure path, sleep
+B_Network.ino   — connectWifi() (static IP + DHCP fallback), fetchScreen()
+C_Display.ino   — drawFrame() (the server's bitmap), drawMessage() ("Server down" / "No Wi-Fi")
+D_OTA.ino       — manifest check, update, app-level rollback, the OTA triggers
+Fonts/Inter_Bold18pt7b.h — the only font left, for the failure message
 ```
 
-**Data flow:**
+**One wake:**
 ```
 setup()
-  ├─ initHardware()           WiFi connect + NTP sync (POSIX TZ)
-  ├─ handleNightMode()        deep sleep if 23:30–06:30
-  ├─ fetchOpenMeteo()         24h hourly temps + 7-day daily forecast
-  ├─ fetchBuienradarNow()     live KNMI station: temp, weather code, wind
-  ├─ fetchBuienradarRain()    2h rain nowcast (24 × 5-min mm/h samples)
-  │     ↑ on failure: restore from RTC_DATA_ATTR brCache (nowValid/rainValid)
-  ├─ fetchTrips(GVC → TBU)    NS Trip Planner v3 (slurp + Filter)
-  ├─ fetchTrips(GV  → TBU)    NS Trip Planner v3
-  ├─ pickDepartures(ctr,hs)   per-slot picker → 3 Departure[]
-  ├─ updateDisplay()          render all sections → display.display()
-  └─ goToSleep(900)           deep sleep 15 min; wakeup restarts setup()
+  ├─ display.begin(), OTA RTC state, checkBootAttempts()   (may roll back)
+  ├─ readBattery()                         before the radio is on
+  ├─ connectWifi()          ── fails → failedWake(FAIL_WIFI)
+  ├─ markFirmwareValid()                   "Wi-Fi came up" = healthy
+  ├─ GET /v1/screen?batt=..&fw=..&rssi=..&wake=..&fail=..&awake_ms=..&wifi_ms=..
+  │        ── fails → failedWake(FAIL_SERVER)   (OTA check first if due)
+  ├─ checkForUpdates() if X-Ota: 1 or the device's own trigger
+  ├─ Wi-Fi off, CPU to 80 MHz
+  ├─ 200: drawFrame(), full or partial refresh per X-Refresh
+  │  204: leave the panel as it is (night)
+  └─ deep sleep X-Sleep seconds (clamped 300..28800; default 1800)
 ```
 
-`loop()` is intentionally empty — deep sleep re-enters `setup()` on each cycle.
+No NTP, no clock, no night mode, no cadence rules on the device: the server's schedule arrives in `X-Sleep`. The contract (query string, 60,000-byte frame, headers, 204) is in the design doc, "The contract". **Change it only backward-compatibly:** the server deploys within minutes of a push, the device only after midnight.
+
+**Failure path** (`failedWake`): the first failure changes nothing on the panel (e-ink keeps its picture) and retries in 10 minutes; from the second, the panel says "No Wi-Fi" or "Server down" (drawn once, full refresh); retries back off to 30, then 60 minutes. The server answers a device reporting `fail > 0` with a full redraw, even at night.
+
+**Server** (`server/`, see [server/README.md](server/README.md)): `screen/sources.py` (the APIs), `collect.py` (per-source caching), `trains.py`, `weather.py`, `headline.py`, `render.py` + `gfx.py` (draws exactly as Adafruit GFX did), `schedule.py` (wake cadence), `telemetry.py`, `service.py` (HTTP on 8088). Deploys itself from `master` when `server/` changes, after a self-test.
 
 ---
 
 ## Configuration
 
-All constants live in **`config.h`** (gitignored — see `config.h.example` for the template). Secrets (WiFi password, NS API key) live in **`secrets.h`** (also gitignored and read-deny-listed for Claude).
+**Firmware:** `config.h` (gitignored; template `config.h.example`) needs **no field at all**: every setting has a default in code. Optional: `WIFI_STATIC_IP`/`GATEWAY`/`SUBNET`/`DNS` (production uses `.220`), `SCREEN_URL` (default `http://192.168.1.212:8088/v1/screen`), `DEBUG_LOG`, `OTA_MANIFEST_URL`, `OTA_TEST_FORCE_CHECK`, and `OTA_SKIP` for bench flashes only. An old `config.h` with the former fields (location, stations, cadence, night mode) still compiles; they are ignored. `secrets.h` (gitignored, read-denied for Claude): `WIFI_SSID`, `WIFI_PASSWORD`. A leftover `NS_API_KEY` is harmless.
 
-Key settings:
-| Constant | Purpose |
-|---|---|
-| `WIFI_SSID` / `WIFI_PASSWORD` | Network credentials (in `secrets.h`) |
-| `NS_API_KEY` | NS Dutch Railways API key (in `secrets.h`) |
-| `LATITUDE` / `LONGITUDE` | Location for Open-Meteo |
-| `TIMEZONE` | POSIX TZ string (NOT IANA — see TZ note below) |
-| `SLEEP_DURATION` | Seconds between updates during peak windows (default 900) |
-| `OFFPEAK_SLEEP_DURATION` | Seconds between updates outside weekday commute windows (default 1800). Set equal to `SLEEP_DURATION` to disable adaptive cadence |
-| `PEAK_AM_*` / `PEAK_PM_*` | Weekday commute windows that get the fast cadence. Weekends ignore these and run at `SLEEP_DURATION` all day |
-| `NIGHT_START_MIN` / `NIGHT_END_MIN` | Minutes since midnight for night mode (default 23:30–06:30) |
-| `STATION_CODE_CENTRAL` / `STATION_CODE_HS` / `STATION_CODE_DESTINATION` | NS station codes |
-| `DEBUG_LOG` | Optional `#define DEBUG_LOG 1` — enables Serial output at 115200 baud |
-| `WIFI_STATIC_IP` / `WIFI_GATEWAY` / `WIFI_SUBNET` / `WIFI_DNS` | Optional static IP (saves ~1–2 s DHCP per wake) |
-| `FULL_REFRESH_EVERY` | Wakes between full e-ink refreshes (default 4) |
+**Server:** environment variables, from `/etc/inkplate-screen.env` in CT 106 or `server/local.env` on the laptop (template `server/local.env.example`): `NS_API_KEY`, `LATITUDE`, `LONGITUDE`, `HA_WEBHOOK_URL`, `HC_PING_*`, and the rest listed there.
 
 ---
 
-## APIs
+## Upstream APIs (all called by the server now)
 
 | API | Auth | URL |
 |---|---|---|
-| Open-Meteo (hourly 24h + daily 7d forecast) | None (free) | `api.open-meteo.com/v1/forecast` |
-| Buienradar feed (live KNMI station observations) | None (free, attribution required for commercial use) | `data.buienradar.nl/2.0/feed/json` |
-| Buienradar raintext (2h precipitation nowcast) | None (free) | `gpsgadget.buienradar.nl/data/raintext?lat=…&lon=…` |
+| Open-Meteo (hourly 24h + daily 7d forecast) | None | `api.open-meteo.com/v1/forecast` |
+| Buienradar feed (live KNMI station observations) | None | `data.buienradar.nl/2.0/feed/json` |
+| Buienradar raintext (2h precipitation nowcast) | None | `gpsgadget.buienradar.nl/data/raintext?lat=…&lon=…` |
 | NS Trip Planner v3 (GVC→TBU and GV→TBU) | `Ocp-Apim-Subscription-Key` header | `gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips` |
 
-All HTTP calls use `WiFiClientSecure` with `client.setInsecure()` (no certificate validation — known limitation), an 8 s timeout, and up to 3 retries via `httpGetWithRetry()`.
+Refresh times and how long a failed source falls back to its last good copy: `POLICY` in [server/screen/collect.py](server/screen/collect.py). The HS trips keep the firmware's conditional fetch: every 45 minutes while Centraal runs clean, fresh the moment it shows a disruption.
 
-**Parse pattern: slurp before parse.** Every HTTPS JSON call (Open-Meteo, Buienradar, Trip Planner) reads the full body into a `String` first and then `deserializeJson(...)`. Streaming straight from `getStream()` over `WiFiClientSecure` intermittently returns `IncompleteInput` when the TLS buffer drains mid-parse — proven on every endpoint that's been tried. The Trip Planner call keeps memory bounded by pairing slurp with `DeserializationOption::Filter` so only the fields the picker actually reads land in the JsonDoc.
+**Train picker policy (`pick_departures` in [server/screen/trains.py](server/screen/trains.py)):** for each of 3 slots take the next Centraal trip. If it's *good* (not cancelled, delay < 10 min) → use as-is. If it's *bad* → look for a *clean HS substitute*; if none exists, show the disrupted CTR with its `cancelled` / `+Xm late` status visible (the user wants to see the disruption, not have it hidden). A clean HS substitute satisfies **all** of: not cancelled, `leg_count ≤ 2` (rejects via-Rotterdam multi-transfer ghost routings that NS Trip Planner returns when queried `GV→TBU` directly), departs within ±10 min of the bad CTR's planned time, departs ≥ now + 5 min (reachable on foot), and arrives strictly earlier than every already-filled slot (catching the same Breda→TBU sprinter as a slot already shown adds zero info). On substitution no note text is written: the HS visual treatment (filled black "DH HS" pill + 2 px outline) is the origin signal. When CTR returns 0 trips (Trip Planner outage), HS is promoted to primary with the same filters. Trains that have left are dropped (a delayed one counts until it actually leaves), and trains more than 3 hours ahead are too (`LOOKAHEAD`), so after the last train of the evening the card slots stay empty instead of showing tomorrow's. **All comparisons use full timestamps:** the firmware compared "HH:MM" text, and a train arriving after midnight "beat" every earlier one (found 23 September 2026). The ±10 min window is intentionally tight; widen `SUBSTITUTE_WINDOW` if real disruption data shows clean HS alternatives rejected for ±12–15 min lag. The tests in `server/tests/test_trains.py` follow this paragraph rule by rule.
 
-**Buienradar mapping & fallback:** the alphabetic iconcode (e.g. `a` = sunny, `j` = clear with high cirrus, `p` = overcast) is translated directly to the dashboard's `WeatherCategory` enum in `categorizeBuienradarIcon()` and flows through the rest of the pipeline as that enum — no synthetic-WMO round-trip (that intermediate hop was removed once Open-Meteo stopped being a current-conditions source). On any Buienradar fetch failure, the dashboard restores the last successful values from `RTC_DATA_ATTR brCache` (separate `nowValid` / `rainValid` flags) rather than falling back to Open-Meteo. Cold boot with a failed first fetch shows the existing "Weather data unavailable" branch and self-heals next wake.
-
-**Train picker policy (`pickDepartures` in [A_Calculations.ino](A_Calculations.ino)):** for each of 3 slots take the next un-picked Centraal trip. If it's *good* (not cancelled, delay < 10 min) → use as-is. If it's *bad* → look for a *clean HS substitute*; if none exists, fall through and show the disrupted CTR with its `cancelled` / `+Xm late` status visible (the user wants to see the disruption, not have it hidden). A clean HS substitute satisfies **all** of: not cancelled, `legCount ≤ 2` (rejects via-Rotterdam multi-transfer ghost routings that NS Trip Planner returns when queried `GV→TBU` directly), departs within ±10 min of the bad CTR's planned time, departs ≥ now + 5 min (reachable on foot), and `uniArr` strictly earlier than every already-filled slot's arrival (no redundant arrivals — catching the same Breda→TBU sprinter as a slot already shown adds zero info). On substitution, **no `note` text is written** — the HS visual treatment (filled black "DH HS" pill + 2 px outline) is the origin signal. The common case this covers: a delayed IC skips its Centraal turnaround and the Centraal-origin leg is cancelled, but the HS-origin leg is on time. When CTR returns 0 trips (Trip Planner outage), HS is promoted to primary with the same 2-leg + dominance filter applied. Verbose per-decision logs are emitted behind `DEBUG_LOG`. The ±10 min window is intentionally tight; if real-world disruption logs show clean HS alternatives being rejected for ±12–15 min lag, widen `deltaMin` in `pickDepartures`.
-
-**Buienradar consensus picker (TO REVISIT):** `fetchBuienradarNow` does **not** just take the single nearest station — that strategy was brittle to single-sensor outliers (observed 2026-05-25: Voorschoten at 9 km reported OVERCAST while Rotterdam, Hoek van Holland, Schiphol and Lopik all within 50 km reported CLEAR, and a blue-sky day rendered with a cloud icon). The current picker collects the `BUIENRADAR_MAX_CANDIDATES` nearest valid stations, votes the mode of `WeatherCategory` across those within `BUIENRADAR_CONSENSUS_KM` (default 30 km, ties broken by proximity), and then sources temp/wind/icon from the closest station that voted for the winning category. Known caveats: (1) AWS-class stations like Voorschoten and Rotterdam Geulhaven use cheaper optical sensors than the KNMI synoptic stations and probably deserve less weight, not equal weight — we currently treat them as equals; (2) mode-blending lags real frontal passages by one wake; (3) categorical ties on transitional days can flicker. Worth revisiting once a week or two of multi-station log data exists — at that point a "trust the synoptic stations, ignore AWS-only" rule may be simpler and more accurate than voting. Constants live in `config.h`; debug logs every candidate when `DEBUG_LOG` is on.
+**Buienradar consensus picker (TO REVISIT), `pick_current` in [server/screen/weather.py](server/screen/weather.py):** not just the nearest station, because that was brittle to single-sensor outliers (observed 2026-05-25: Voorschoten at 9 km reported OVERCAST while Rotterdam, Hoek van Holland, Schiphol and Lopik all within 50 km reported CLEAR, and a blue-sky day rendered with a cloud icon). It takes the `BUIENRADAR_MAX_CANDIDATES` nearest fresh stations, votes the mode of the weather category across those within `BUIENRADAR_CONSENSUS_KM` (default 30 km, ties broken by proximity), and sources temp/wind/icon from the closest station that voted for the winning category. Known caveats: (1) AWS-class stations like Voorschoten and Rotterdam Geulhaven use cheaper optical sensors than the KNMI synoptic stations and probably deserve less weight; (2) mode-blending lags real frontal passages by one render; (3) categorical ties on transitional days can flicker. A "trust the synoptic stations, ignore AWS-only" rule may beat voting once there is data.
 
 ---
 
-## Display Layout (800×600px, 1-bit)
+## Display Layout (800×600px, 1-bit), drawn by the server
 
 ```
 y=0    ┌─ MASTHEAD: greeting + date + sun/moon arc with current dot ───┐
 y=92   ├─ thick rule (2 px) ──────────────────────────────────────────┤
 y=112  │ WEATHER  |   RAIN COMING / NEXT HOURS DRY                   │
-y=125  │ 128px icon  │  axes + 12-pt rain chart (Bayer fill) OR      │
+y=125  │ 128px icon  │  axes + rain chart (Bayer fill) OR            │
        │ big temp °  │  24h temp curve with sunrise/sunset guides    │
-y=232  │ wind arrow + "X km/h NE"                                    │
+y=232  │ wind arrow + "X km/h"                                       │
 y=305  ├─ dotted divider ─────────────────────────────────────────────┤
 y=324  │ WEEK — 7 cells × 102 px, day name + 48 icon + range bar     │
 y=455  ├─ dotted divider ─────────────────────────────────────────────┤
-y=474  │ DEPARTURES · TO BREDA — 3 cards × 220 px (CTR or HS pill)   │
+y=474  │ TRAINS → BREDA — 3 cards × 220 px (CTR or HS pill)          │
 y=590  └─ FOOTER: updated HH:MM + battery icon ──────────────────────┘
 ```
 
-All Y coordinates are absolute; section comments in `C_Display.ino` annotate each band.
+All Y coordinates are absolute; the section comments in `render.py` annotate each band. The fonts (Inter, OFL) and icons were imported from the firmware's GFX headers and `icons.h` into `server/screen/assets/`, and `server/screen/gfx.py` reproduces Adafruit GFX's integer drawing routines, so the port matched the old wall screen pixel for pixel. New sizes for a redesign can come from TTF alongside. **Sizing:** GFX point sizes don't map 1:1 to CSS pixels: `9pt7b` cap-height ≈ 14 px, `12pt7b` ≈ 17, `18pt7b` ≈ 26, `48pt7b` ≈ 64. Glyphs outside ASCII (°, ·, →) are drawn as primitives.
 
 ---
 
-## Fonts
+## Build & Flash (firmware)
 
-Inter (OFL) converted from TTF via [rop.nl/truetype2gfx](https://rop.nl/truetype2gfx/). Headers in `Fonts/`:
+**IDE:** Arduino IDE 2.x, board "Soldered Inkplate6" (= FQBN `Inkplate_Boards:esp32:Inkplate6V2`), partition scheme `min_spiffs`. **Library:** `Inkplate` (Soldered, 11.1.0). The firmware no longer uses ArduinoJson; CI still installs it, which is harmless. The IDE bundles `arduino-cli` (`resources/app/lib/backend/resources/arduino-cli.exe` under the IDE's install folder), which compiles the sketch from a terminal.
 
-| File | Used for |
-|---|---|
-| `Inter_Bold48pt7b.h` | Hero temperature |
-| `Inter_Bold18pt7b.h` | Greeting |
-| `Inter_Bold12pt7b.h` | Train time |
-| `Inter_Bold9pt7b.h` | Week day names, max-temp labels, transfer warnings, train track |
-| `Inter_Regular18pt7b.h` | (kept for fallback / future) |
-| `Inter_Regular12pt7b.h` | Failure-state messages |
-| `Inter_Regular9pt7b.h` | All body text, small caps, chart labels, date |
+**Releases come from CI, not from your IDE** (see "OTA gotchas"). A USB flash is for bench tests only, and a bench build must set `#define OTA_SKIP 1` in the local `config.h`: otherwise the "dev" build replaces itself with the newest release on its first successful wake. `#define BENCH_MAX_SLEEP_S 60` caps each sleep so a bench session doesn't wait half an hour per wake. CI refuses to build if the `CONFIG_H` secret defines either. The checklist for the switch-over is [docs/thin-client-switchover.md](docs/thin-client-switchover.md).
 
-**Sizing**: Adafruit GFX point sizes don't map 1:1 to CSS pixels — `9pt7b` cap-height ≈ 14 px, `12pt7b` ≈ 17, `18pt7b` ≈ 26, `48pt7b` ≈ 64. Pick whichever lands closest to the mockup's `font-size`.
-
-**Special glyphs** not in the ASCII-only headers are drawn as primitives:
-- `°` → `drawDegreeRing(cx, cy, outerR, innerR)` — filled black ring + white inner
-- `·` (middot) → small `fillCircle`
-- `→` (right arrow) → `drawRightArrow` (7×3 px)
-
----
-
-## Icons
-
-All bitmaps are in `icons.h` stored in PROGMEM:
-- **128×128**: current-weather variants (sun, cloud_sun, cloud_moon, etc.)
-- **64×64**: source bitmaps that the 48×48 set is derived from. No live consumer in the firmware after the redesign — kept so the downscale script can regenerate the 48 set without re-tracing originals.
-- **48×48**: week-strip forecast variants (auto-generated by `design/downscale_icons.py`)
-
-When accessing bitmap data directly, always use `pgm_read_byte()`.
-
-To regenerate the 48×48 set after editing the 64×64 sources:
-```sh
-python design/downscale_icons.py
-# then append design/icons_48.generated.h to icons.h (or manually replace)
-```
-
----
-
-## Build & Flash
-
-**IDE:** Arduino IDE 2.x
-**Board:** Inkplate6 (via e-Radionica board manager URL)
-**Required libraries:**
-- `Inkplate` (e-Radionica)
-- `ArduinoJson` v7 (NOT v6 — API differs: use `JsonDocument`, not `DynamicJsonDocument`)
-- `WiFi`, `WiFiClientSecure`, `HTTPClient` (built into ESP32 core)
-
-**Flash steps:**
-1. Copy `config.h.example` → `config.h` and fill in credentials
-2. Create `secrets.h` with `#define WIFI_SSID "..."`, `#define WIFI_PASSWORD "..."`, `#define NS_API_KEY "..."`
-3. Open `Dashboard.ino` in Arduino IDE (all `.ino` files are included automatically)
-4. Select board: Inkplate6, correct COM port
-5. Upload
-6. (Optional) Set `#define DEBUG_LOG 1` in `config.h` to see serial logs at 115200 baud
+**Server:** `cd server && python -m pytest` (on this laptop set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`), `python -m screen.preview`, `python -m screen.service`. See [server/README.md](server/README.md).
 
 ---
 
 ## Known Issues & Limitations
 
-### Security
 - `config.h` and `secrets.h` must NOT be committed.
-- No SSL certificate validation (`setInsecure()`) on any HTTPS call.
+- No TLS certificate validation (`setInsecure()`) for the OTA manifest and binary; the screen request is plain HTTP on the LAN by design (TLS handshakes were the battery's main cost; the frame and the report are not secret).
+- The server listens to the whole LAN on 8088, so any LAN device could post a fake battery report. Accepted.
 
 ---
 
 ## Working with Claude Code
 
-- **ArduinoJson v7**: Use `JsonDocument doc;` (no size arg). Fields: `doc["key"] | default`. Arrays: `doc["arr"].as<JsonArray>()`.
-- **HTTPS JSON parsing — slurp then parse, always.** Streaming straight from `http.getStream()` over `WiFiClientSecure` returned `IncompleteInput` intermittently on every endpoint tried (Open-Meteo, Buienradar, Trip Planner), because the TLS buffer drains mid-parse. The fix is to read the body into a `String` first, then `deserializeJson(doc, response)`. For large payloads where the parsed tree would push heap pressure (Trip Planner's ~90 KB body), keep the *parse tree* small by pairing slurp with `DeserializationOption::Filter` — only the fields the picker actually reads land in the JsonDoc. Measured Trip Planner heap delta: 153 KB free → 101 KB during fetch → 153 KB free after. Plenty of headroom.
-- **PROGMEM**: All icon arrays use `PROGMEM`. If adding new bitmaps, declare with `const uint8_t PROGMEM name[] = {...};` and access with `pgm_read_byte()`.
-- **Deep sleep — RTC RAM persists**: Every wake is a fresh `setup()` call, so heap state is lost. **But** `RTC_DATA_ATTR` variables survive deep sleep — used today for `wakeCounter`, and a good fit for any cache that should outlive the cycle (last-known-good departures, week forecast). Plain globals do NOT persist.
-- **RTC caches that hold structs need a magic sentinel and a layout-bump discipline.** `brCache`, `hsCache`, and `otaRtcMagic` all use a sentinel word (`HS_CACHE_MAGIC`, `OTA_RTC_MAGIC`, etc.) checked at the top of setup() to distinguish "initialized" from "garbage from cold boot." **If you change the layout of a struct stored in an RTC cache (e.g. add a field to `Departure`, which is stored in `hsCache.trips[]`), you MUST bump the corresponding magic constant in the same commit.** The cache reads bytes positionally — a layout change without a magic bump silently reads garbage into the new field, and the picker/renderer downstream may behave unpredictably without crashing (so app-level rollback won't catch it).
-- **String vs char[]**: Prefer `char buf[N]` + `sprintf` over `String` objects on the heap; the ESP32 has limited RAM and heap fragmentation is a real risk on long-running embedded systems.
-- **1-bit display**: All drawing is BLACK or WHITE only. `display.display()` causes a full e-ink refresh (~1–2 s, some flicker). Partial refresh runs in between (`FULL_REFRESH_EVERY` controls cadence).
-- **Timezone**: System time uses `configTzTime(TIMEZONE, ...)`, so `TIMEZONE` must be a **POSIX TZ string** (e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`) — ESP32 has no IANA tzdb, so `"Europe/Amsterdam"` silently falls back to UTC. Open-Meteo URLs use `timezone=auto` (derived from lat/lon) so they don't depend on `TIMEZONE`. Trip Planner ISO timestamps are parsed by `parseISOToLocal()` (treats fields as local since both device and API agree on Amsterdam TZ).
-- **Pixel-accurate layout**: The display sections use absolute Y coordinates with section-band comments in `C_Display.ino`. Treat those comments as the layout contract — adjusting one band without updating its neighbours will silently overlap content.
-- **OTA safety — boot-path discipline (when OTA is live):** the device is mounted behind glass on the wall. Once OTA is enabled, any change tagged for release that prevents `setup()` from reaching the end of `updateDisplay()` will trigger app-level rollback at best, or require physical reflash at worst. Treat boot-path code (`initHardware`, `handleNightMode`, WiFi/NTP, anything before `updateDisplay()` returns) as load-bearing. Layout/editorial changes inside `C_Display.ino` are low-risk; changes to network code, hardware init, or `setup()` flow need a local USB test before pushing (push-to-master auto-tags + releases — see "Releases are AUTOMATIC" below). If a change adds a new required `config.h` field, update the CI-injected `config.h` in the same commit — CI must remain the source of truth for the build. Never reinterpret the semantics of an existing config field without renaming it (silent semantic drift is the one failure mode that bypasses rollback because nothing crashes). See [docs/ota-updates-plan.md](docs/ota-updates-plan.md).
+- **Boot-path discipline — the whole firmware is boot path now.** The device is behind glass. Any change that stops a wake from reaching `markFirmwareValid()` triggers app-level rollback at best and needs a physical reflash at worst. Every firmware change gets a USB bench test (with `OTA_SKIP`) before it goes to `master`. Layout and logic changes belong in `server/`, which deploys without touching the device.
+- **Pushing to `master`:** firmware changes (`*.ino`, `*.h`, `Fonts/**`) build a release the device installs after midnight; `server/` changes are live on CT 106 within ~5 minutes if `screen.selftest` passes. Keep `server/` free of `.h` and `.ino` files. A commit touching both deploys twice, at different times: the contract must stay backward compatible.
+- **RTC state needs a magic sentinel and a layout-bump discipline.** `RTC_DATA_ATTR` variables survive deep sleep but not a power loss or an OTA reboot. `D_OTA.ino` guards its state with `OTA_RTC_MAGIC` (now `0xC0FFEE47`; `42` was the old layout, `44`–`46` the old caches: don't reuse). **If you change the layout of the OTA RTC state, bump the magic in the same commit.** The thin client's other RTC values (`wakeCounter`, `failStreak`, `shownMessage`, `prevAwakeMs`, `prevWifiMs`) are safe at zero and need none.
+- **Memory:** the 60,000-byte frame does not fit in static RAM (`.dram0.bss` overflows); it is `ps_malloc`'d in PSRAM. Prefer `char buf[N]` + `snprintf` over `String` on the heap.
+- **1-bit display:** `display.display()` is a full refresh (~1–2 s, flashes); `partialUpdate()` in between. The server decides which (`X-Refresh`): full every 4th wake, after a failure streak, and on new firmware.
+- **Pixel-accurate layout** lives in `server/screen/render.py`: treat its band comments as the layout contract, and check `python -m screen.preview` output before pushing.
 
 ---
 
@@ -193,77 +129,71 @@ python design/downscale_icons.py
 
 These were discovered during integration spikes and are not derivable from the code alone. Keeping them so a future change doesn't re-discover them the hard way.
 
-**NS Trip Planner v3:**
-- The existing Reisinformatie v2 API key works for v3 — no separate portal subscription needed.
+**NS Trip Planner v3** (read by `server/screen/sources.py`):
+- The existing Reisinformatie v2 API key works for v3 — no separate portal subscription needed. No rate limit shows in the portal; the server makes at most ~200 trip calls a day.
 - Den Haag HS is `GV`, not `GVH`. `GVH` returns HTTP 400.
-- **GVC→TBU trips are always 2 legs** (IC to Breda, SPR Breda → TBU). The single-leg branch in `fetchTrips` is defensive only.
-- **GV→TBU trips are 2 legs *when clean* (IC Direct via Rotterdam to Breda + SPR to TBU) but Trip Planner also returns 3+ leg via-Rotterdam-with-Sprinter-changes routings that NS doesn't surface in the consumer app from a "DH Centraal" origin.** `pickDepartures` rejects substitutes with `legCount > 2` for this reason — without the filter, the picker substitutes gnarly multi-transfer trips into the disruption slot.
-- `Departure.legCount` is populated from `legs.size()` in `fetchTrips` and is the source of truth for the 2-leg filter. The field is part of the `Departure` struct so it survives in `hsCache` — bump `HS_CACHE_MAGIC` if you ever rename or remove it.
-- Payloads are ~86 KB (GVC→TBU) and ~94 KB (GV→TBU) — slurp+Filter is needed; raw slurp into a `JsonDocument` blows heap.
-- NS returns multiple "routing options" for the same physical train (different via-station hashes → identical `plannedDepartureISO`). The picker in `A_Calculations.ino` dedups by ISO before assigning slots.
-- ISO timestamps come with offsets *without* a colon (`+0200`, not `+02:00`). Both device and API use Amsterdam local time, so `parseISOToLocal` treats the wall-clock fields as local and ignores the offset.
+- **GVC→TBU trips are normally 2 legs** (IC to Breda, SPR Breda → TBU). A 3-leg night routing (04:44) was seen on 23 September 2026.
+- **GV→TBU trips are 2 legs when clean (IC Direct via Rotterdam to Breda + SPR to TBU) but Trip Planner also returns 3+ leg via-Rotterdam-with-Sprinter-changes routings** that NS doesn't surface in the consumer app. Hence the `leg_count ≤ 2` filter on substitutes.
+- Payloads are ~90 KB (GVC→TBU) and ~115 KB (GV→TBU). This drove the firmware's slurp-and-filter parsing; on the server it no longer matters.
+- NS returns multiple "routing options" for the same physical train (identical planned departure). The picker dedups by planned departure.
+- ISO timestamps come with offsets *without* a colon (`+0200`); Python's `fromisoformat` accepts them. The server converts every time to Amsterdam wall-clock.
 
 **Buienradar feed schema:**
 - The weather icon is exposed as an *image URL* (`.../weather/30x30/aa.png`) — there is no `iconcode` field. Filename stem = code.
-- Icon codes are doubled letters for the day variant (`aa`, `bb`, `cc`) and single for the night variant (`a`, `b`). `extractBuienradarIconCode` collapses doubled letters to single before lookup. `cc` is the only multi-char code that stays distinct.
-- `winddirectiondegrees` is exposed directly as an integer (0–360). `winddirection` (Dutch cardinal string) is only used as fallback.
-- `feeltemperature` is lowercase (not `feelTemperature`). Not used by the dashboard.
+- Icon codes are doubled letters for the day variant (`aa`, `bb`) and single for the night variant (`a`, `b`); doubled letters collapse to single before lookup. `cc` is the only multi-char code that stays distinct.
+- `winddirectiondegrees` is an integer (0–360); `winddirection` (Dutch cardinal string) is only the fallback.
+- `feeltemperature` is lowercase. Not used.
+
+**Open-Meteo:** `precipitation_hours` arrives as a JSON float (`12.0`). The firmware read it with ArduinoJson's `| 0`, which returns the default for anything not stored as an integer, so its "≥ 3 hours of precipitation means drizzle" rule never fired. The server reads the number. (Also found on 23 September 2026: the firmware's "Wet and windy" headline could never appear, because "Windy" always claimed the slot first.)
 
 **Home network topology (as of 2026-07-26 router swap):**
-- **The TP-Link Deco is the access point; a DrayTek Vigor is the router.** The Deco runs in AP/bridge mode behind the DrayTek, which owns DHCP on `192.168.1.0/24` (pool `.10`–`.209`, i.e. start `.10` + count 200). Previously the Deco routed on `192.168.68.0/22`. **Consequence for the Inkplate: SSID, password, band and WPA mode never changed** — same Deco radios — so `secrets.h` was untouched by the swap. Only the subnet moved. Any address reservation must be made on the DrayTek (`LAN` → `Bind IP to MAC`); reservations set in the Deco app do nothing in AP mode.
-- Device static IP is `192.168.1.220`, bound to MAC `10:97:BD:DA:4A:F4`, deliberately **outside** the DHCP pool.
-- **Don't validate a candidate static IP against the router's DHCP table alone.** `.200` was the first pick: it answered a ping, then went silent, and the DrayTek's table showed it free — an intermittent device (phone/tablet) held the lease and was away when the table was read. Pick from outside the pool and bind the MAC; that's robust to devices that come and go, which a table snapshot is not.
-- **The Inkplate is unreachable by ping ~98% of the time** (deep sleep, WiFi off, ~20 s awake per 15 min). A failed ping proves nothing. To confirm it holds its static IP, poll every ~10 s for a full wake interval, or read the DrayTek's ARP table.
+- **The TP-Link Deco is the access point; a DrayTek Vigor is the router.** The Deco runs in AP/bridge mode behind the DrayTek, which owns DHCP on `192.168.1.0/24` (pool `.10`–`.209`). **SSID, password, band and WPA mode never changed** in the swap — same Deco radios — so `secrets.h` was untouched. Any address reservation must be made on the DrayTek (`LAN` → `Bind IP to MAC`); reservations in the Deco app do nothing in AP mode.
+- Device static IP is `192.168.1.220`, bound to MAC `10:97:BD:DA:4A:F4`, deliberately **outside** the DHCP pool. The screen service is CT 106 at `192.168.1.212`.
+- **Don't validate a candidate static IP against the router's DHCP table alone.** `.200` was the first pick: it answered a ping, then went silent, and the DrayTek's table showed it free — an intermittent device held the lease and was away when the table was read. Pick from outside the pool and bind the MAC.
+- **The Inkplate is unreachable by ping ~98% of the time** (deep sleep, Wi-Fi off most of the time). A failed ping proves nothing. HA's `sensor.inkplate_last_seen` and the screen service's `/status` show when it last asked.
 
 **CI / arduino-cli build gotchas:**
-- **FQBN for Inkplate6 is `Inkplate6V2`, NOT `Inkplate6`.** The Soldered "Inkplate_Boards:esp32" package contains both. The legacy `Inkplate6` entry has `build.board=ESP32_DEV` which fails to define the `ARDUINO_INKPLATE6` macro that the v11+ Inkplate library's `driverSelect.h` requires — compile dies with `#error "Board not selected!"`. The IDE's "Soldered Inkplate6" picker silently selects `Inkplate6V2` (which has `build.board=INKPLATE6V2` → defines `ARDUINO_INKPLATE6V2`). Lost ~1 hour to this in Phase 1.
-- **arduino-cli requires the sketch folder name to match the main `.ino` filename.** Repo checks out as `inkplate-dashboard/` but the main file is `Dashboard.ino`. CI workaround: copy sketch files into `sketch/Dashboard/` before invoking `arduino-cli compile`.
-- **`config.h` and `secrets.h` are gitignored, but CI must own them as the source of truth.** Both are stored as whole-file Actions secrets (`CONFIG_H`, `SECRETS_H`) and written to disk in a workflow step before compile. Never reinterpret semantics of an existing `config.h` field without renaming — see "boot-path discipline" above for why.
-- **`FIRMWARE_VERSION` is injected via a CI-generated `firmware_version.h`** (also gitignored). Local builds use the `"dev"` fallback in `Dashboard.ino`. Don't reference `FIRMWARE_VERSION` from code paths that must run on first-ever boot before the OTA framework lands — guard with `#ifdef` if in doubt.
+- **FQBN for Inkplate6 is `Inkplate6V2`, NOT `Inkplate6`.** The Soldered "Inkplate_Boards:esp32" package contains both. The legacy `Inkplate6` entry has `build.board=ESP32_DEV` which fails to define the `ARDUINO_INKPLATE6` macro that the v11+ Inkplate library's `driverSelect.h` requires — compile dies with `#error "Board not selected!"`. The IDE's "Soldered Inkplate6" picker silently selects `Inkplate6V2`. Lost ~1 hour to this in Phase 1.
+- **arduino-cli requires the sketch folder name to match the main `.ino` filename.** CI copies `*.ino *.h` and `Fonts/` into `sketch/Dashboard/` before compiling. The local checkout's folder is already called `Dashboard`.
+- **`config.h` and `secrets.h` are gitignored, but CI owns them as the source of truth**: whole-file Actions secrets `CONFIG_H` and `SECRETS_H`, written to disk before compile. Never reinterpret the semantics of an existing `config.h` field without renaming it.
+- **`FIRMWARE_VERSION` is injected via a CI-generated `firmware_version.h`** (gitignored). Local builds use the `"dev"` fallback in `Dashboard.ino`.
 
 **OTA gotchas (confirmed during Phase 3 deployment):**
-- **Releases are AUTOMATIC on every push to `master` that touches firmware sources** (`*.ino`, `*.h`, `Fonts/**`). The workflow computes the next tag as `v<YYYY.MM.DD>-NN` (UTC, NN auto-incremented per day), creates the tag pointing at the pushed commit, builds, and publishes the release + updates the `firmware-latest` manifest. Docs/workflow-only commits are filtered out by the paths list. To opt out of a single release explicitly, include `[skip release]` in the commit message. To force a rebuild without a code change, use the workflow_dispatch button on the Actions page. Manual `git tag` + push is no longer the normal flow — it still works (any tag matching `v[0-9]*` triggers nothing now, because the workflow trigger changed to `branches: [master]`), so don't fall back to it expecting CI to pick it up.
-- **Once OTA is live, CI's `CONFIG_H` secret IS the device's config.** Editing local `config.h` and closing the IDE without uploading does nothing — the device only runs CI-built binaries. To change any production config (`SHOW_VERSION_FOOTER`, `OTA_TEST_FORCE_CHECK`, station codes, anything): update the `CONFIG_H` Actions secret, then push a commit to master (or workflow_dispatch). The local file is only relevant when USB-flashing.
-- **Secret-before-push sequencing matters.** GitHub Actions binds secret values at step start time. If a push is going to pick up a new secret value, update the secret FIRST, then push. Pushing before the secret update gives you a build with stale config.
-- **Renaming or removing a `config.h` field — exact workflow.** Renames are forced by the boot-path discipline rule (don't silently reinterpret an existing field's semantics). The required order, every time:
-  1. Update **both** `config.h.example` (in the repo, with documentation) AND the local gitignored `config.h` (so the next USB-flash compiles).
-  2. Update the `CONFIG_H` Actions secret on GitHub with the new field name + value.
-  3. ONLY THEN push the code change on `master` (using the new field name; old name unreferenced). Pushing before step 2 gives you a CI compile failure (`error: 'NEW_FIELD' was not declared`); pushing before step 1 gives you a local-build failure next time you USB-flash.
-  4. Verify the v?? release built green on the Actions page before walking away.
-- **RTC RAM does NOT survive OTA-induced reboot on this hardware. Accepted limitation.** Despite ESP-IDF docs claiming `RTC_DATA_ATTR` survives `esp_restart()`, the OTA path (`httpUpdate.update()` → SW_CPU_RESET) clears RTC slow memory on the Inkplate6V2. Observed: `wakeCounter` resets to 0, `otaRtcMagic` mismatches → `initOtaState()` resets everything including `otaPendingVersion`. **Failure mode it leaves open:** if a newly-OTA'd firmware crashes on its very first boot (before reaching `markFirmwareValid()`), `pendingVersion` is already gone, so rollback never identifies "this version is bad" and the device is stuck. Recovery is USB reflash. Mitigation NOT pursued because the only realistic trigger is "binary boots fine on bench but crashes on wall device for hardware-specific reason" — unlikely given local USB test before pushing is standard. Untried fix candidates if this ever bites: `RTC_NOINIT_ATTR` or NVS-backed persistence.
-- **`markFirmwareValid()` must run AFTER `initHardware()` but BEFORE `handleNightMode()`.** The original "end of setup()" plan was broken: `handleNightMode()` calls `goToSleep()` and never returns during 23:30–06:30, so during the night every 15-min wake would increment `bootAttempts` without resetting → false rollback within ~45 minutes. Rule: "if WiFi+NTP came up, firmware is healthy enough to commit to."
-- **`checkForUpdates()` runs BEFORE `handleNightMode()`** so OTA can fire on night wakes (first wake after midnight triggers it). New firmware then has ~6 hours to soak before the dashboard wakes for the morning — if it rolls back, the user never sees the crash cycle.
-- **"dev" lexical compare exception is required for local-build → OTA upgrade path.** `FIRMWARE_VERSION="dev"` lexically sorts > all digit-starting versions because `'d'` > `'2'` in ASCII. Without an explicit `localIsDev` exception in `checkForUpdates()`, a freshly USB-flashed local build can never OTA-pull a tagged release. Don't remove the exception.
-- **GitHub release asset URLs 302-redirect** from `github.com/.../releases/download/...` to `objects.githubusercontent.com`. `httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS)` is required. Without it the download returns 0 bytes silently.
-- **A USB-flashed local build cannot survive its first boot while a newer-dated release exists.** Consequence of the `"dev"` lexical exception above: `checkForUpdates()` runs at `Dashboard.ino:272`, long before `updateDisplay()` at :417, so a local build boots, immediately OTAs itself to the latest release, and reboots — you never see your own code render. Observed 2026-07-26 while testing a WiFi subnet change: the fresh build connected fine, then replaced itself with a two-month-old release carrying the *old* subnet, which then couldn't reach the network at all. Symptom is "the upload didn't work" (display never changes) even though esptool verified every block. **The order is: push to master, wait for the release to build green, THEN USB flash** — the local build will OTA-pull the release you just made, which converges to the right firmware. To bench-test a local build in isolation instead, comment out `checkForUpdates()` for that flash only.
-- **Serial output between USB upload and serial monitor reconnect is lost.** The boot banner and `Wake #` from the very first boot after `arduino-cli upload` are typically missed because Arduino IDE closes the serial port for upload and the user reopens it after the hard reset. Don't conclude "the firmware didn't reboot" just because you didn't see those lines.
+- **Releases are AUTOMATIC on every push to `master` that touches firmware sources** (`*.ino`, `*.h`, `Fonts/**`). The workflow computes the next tag as `v<YYYY.MM.DD>-NN` (UTC), creates the tag, builds, and publishes the release + updates the `firmware-latest` manifest. Docs, workflow and `server/` commits are filtered out by the paths list. To opt out of a single release, include `[skip release]` in the commit message. To force a rebuild without a code change, use workflow_dispatch.
+- **Once OTA is live, CI's `CONFIG_H` secret IS the device's config.** Editing local `config.h` does nothing for the device; it only matters for USB flashes. To change production config: update the secret, then push (or workflow_dispatch).
+- **Secret-before-push sequencing matters.** GitHub Actions binds secret values at step start time. Update the secret FIRST, then push.
+- **Renaming or removing a `config.h` field — exact workflow.** (1) Update both `config.h.example` and the local `config.h`. (2) Update the `CONFIG_H` secret. (3) Only then push the code change. (4) Verify the release built green before walking away. The thin client avoids new required fields altogether by giving each a default in code.
+- **RTC RAM does NOT survive OTA-induced reboot on this hardware. Accepted limitation.** The OTA path (`httpUpdate.update()` → SW_CPU_RESET) clears RTC slow memory on the Inkplate6V2: `wakeCounter` resets to 0, `otaRtcMagic` mismatches → `initOtaState()` resets everything including `otaPendingVersion`. **Failure mode it leaves open:** if a newly-OTA'd firmware crashes on its very first boot (before reaching `markFirmwareValid()`), `pendingVersion` is already gone, so rollback never identifies "this version is bad" and the device is stuck. Recovery is USB reflash. Untried fix candidates if this ever bites: `RTC_NOINIT_ATTR` or NVS-backed persistence.
+- **`markFirmwareValid()` runs as soon as Wi-Fi is up, before the server request.** A server outage must not count against new firmware and roll it back. A release that breaks only the server request is caught by the OTA triggers while failing (below) instead.
+- **OTA must never depend on the server.** Triggers: the server's `X-Ota: 1` (sent on its 00:05 wake, so updates land while the house sleeps and soak ~6 hours before morning); the device's own counter (48 hours of summed sleep without a check); and while the server is unreachable, the second failed wake and then every 12 hours of sleep. A cold boot (and an OTA reboot, which clears RTC) checks once.
+- **"dev" lexical compare exception is required for local-build → OTA upgrade path.** `FIRMWARE_VERSION="dev"` lexically sorts > all digit-starting versions. Without the `localIsDev` exception in `checkForUpdates()`, a USB-flashed local build could never OTA-pull a tagged release. Don't remove it.
+- **GitHub release asset URLs 302-redirect** to `objects.githubusercontent.com`. `httpUpdate.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS)` is required. Without it the download returns 0 bytes silently.
+- **A USB-flashed local build replaces itself on its first successful wake unless `OTA_SKIP` is set.** Consequence of the "dev" exception and the cold-boot check: the local build connects, checks the manifest, and OTAs itself to the newest release. Observed 2026-07-26 with the old firmware (it pulled a two-month-old release with the old subnet). **Bench builds set `OTA_SKIP`**; to get a local change onto the wall, push to `master` and let OTA deliver it.
+- **Serial output between USB upload and serial monitor reconnect is lost.** Don't conclude "the firmware didn't reboot" just because you didn't see the first lines.
 
-**OTA design decisions (the WHYs, since the code shows the HOWs):**
-- **Daily check, not per-wake.** Per-wake checks would add ~2.9 mAh/day (≈10% of baseline) vs ~0.03 mAh/day for daily. No practical upside since tag→deploy lag of one night is fine.
-- **First wake after midnight, not 7am.** Lets the device update while the user is asleep; new firmware has ~6 hours of soak time before morning. Crash loops happen out of view.
-- **Plain text manifest, not JSON.** Two lines: version, then binary URL. No parser, no schema versioning, no heap pressure. We slurp into `String` and split on `\n`.
-- **Manifest hosted on `firmware-latest` orphan branch, not GitHub Pages.** Pages requires repo setup; raw branch needs none. Manifest URL: `raw.githubusercontent.com/.../firmware-latest/version.txt`. Binary itself stays in releases (free UI + history).
-- **App-level rollback, NOT bootloader rollback.** Stock Arduino-ESP32 doesn't enable `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`, so `esp_ota_mark_app_valid_cancel_rollback()` is a no-op. We use an `RTC_DATA_ATTR` boot-attempts counter + `esp_ota_set_boot_partition()` instead — same outcome, no bootloader rebuild.
-- **3 boot-failure threshold.** Tolerates one transient failure (WiFi blip, brown-out) before rolling back. Smaller would false-positive; larger means longer until recovery.
-- **`min_spiffs` partition, not `default`.** Two 1.9 MB OTA slots with 190 KB SPIFFS. Current binary is ~1.2 MB so fits comfortably; future headroom matters.
-- **No SHA256 verification of downloaded binary.** ESP32 OTA validates the binary header magic but not content hash. Personal device + own GitHub releases — full signing is disproportionate complexity.
-- **Whole-file `CONFIG_H` / `SECRETS_H` Actions secrets, not field-by-field.** ~10 values; whole-file is simpler. Switch later if granular changes become annoying.
+**OTA design decisions (the WHYs):**
+- **Not per wake.** Per-wake manifest checks would add ~0.03 mAh per wake; once a night (server hint) plus a 48-hour fallback costs next to nothing.
+- **Plain text manifest, not JSON.** Two lines: version, then binary URL.
+- **Manifest hosted on `firmware-latest` orphan branch, not GitHub Pages.** Manifest URL: `raw.githubusercontent.com/.../firmware-latest/version.txt`. The binary stays in releases.
+- **App-level rollback, NOT bootloader rollback.** Stock Arduino-ESP32 doesn't enable `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`. An `RTC_DATA_ATTR` boot-attempts counter + `esp_ota_set_boot_partition()` gives the same outcome.
+- **3 boot-failure threshold.** Tolerates one transient failure before rolling back.
+- **`min_spiffs` partition.** Two 1.9 MB OTA slots; the thin client is ~1.1 MB.
+- **No SHA256 verification of downloaded binary.** Personal device + own GitHub releases.
+- **Whole-file `CONFIG_H` / `SECRETS_H` Actions secrets**, not field-by-field.
 
 **OTA out of scope (deliberately not doing — don't re-evaluate without a reason):**
-- Signed firmware updates (overkill for this threat model)
-- Delta updates (1.2 MB full binary is fine, GitHub bandwidth is free)
-- Multiple staged environments / canary releases (one device, one user)
-- Remote logging back to a server (serial logs over USB cover all debugging needs)
-- TLS certificate validation (using `setInsecure()` everywhere, consistent with project posture)
-- Custom bootloader with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` (app-level rollback achieves the same outcome with much less complexity)
-- Battery-threshold gating of OTA checks (no battery monitoring code exists today; not worth adding just for this)
-- A manual "skip OTA" recovery path via the WAKE button (frame is fully enclosed, button not accessible; physical pull + USB reflash is the only recovery if rollback also fails)
+- Signed firmware updates, delta updates, staged environments / canaries (one device, one user)
+- TLS certificate validation (`setInsecure()`, consistent with project posture)
+- Custom bootloader with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`
+- A manual "skip OTA" recovery path via the WAKE button (frame is fully enclosed)
+- **Changed 23 September 2026:** "remote logging back to a server" and "no battery monitoring code" used to be listed here. The thin client reports battery, firmware, Wi-Fi signal and per-wake timings on every request, and Home Assistant keeps them (low-battery warning below 15%). That is status reporting, not logging: debugging still happens over USB serial.
 
-**Adaptive wake cadence (`nextSleepSeconds()` in [B_Network.ino](B_Network.ino)):** wake count is the largest remaining battery lever because WiFi-active time is ~92% of the daily budget. The power audit's "flat 30-min wakes" option was rejected for making the 2 h rain nowcast up to 30 min stale — but that staleness only costs anything when the user is about to leave the house. So peak windows (weekday commute) keep 15 min and the rest of the weekday runs at 30 min. **Weekends stay at 15 min all day** — no fixed commute to anchor peaks to, and the panel is read at unpredictable times. If `getLocalTime()` fails, the function returns `SLEEP_DURATION`: failing toward *too-frequent* wakes costs battery, failing toward too-long ones leaves a stale dashboard for hours. All five constants have `#ifndef` defaults in `Dashboard.ino`, so a lagging CI `CONFIG_H` secret can't break the build (unlike a bare `const` — see the rename workflow above).
+**Wake cadence (`server/screen/schedule.py`):** Wi-Fi-active time was ~92% of the old daily budget, so wake count was the largest lever. Weekday commute windows (06:30–09:30, 16:00–19:30) every 15 minutes, the rest of the weekday every 30, weekends every 15 all day (no fixed commute; the panel is read at unpredictable times), nothing 23:30–06:30 except the 00:05 OTA wake. Each wake lands 30 s after a 5-minute render slot, which also corrects the ESP32 sleep timer's drift. Sleep lengths are real seconds across DST. Moved from the firmware unchanged; revisit only with measured battery data (HA's awake and Wi-Fi time sensors).
 
 **Battery optimizations consciously skipped:**
-- TLS cert pinning — small power win, big code/maintenance cost. Defer until `setInsecure()` stops working (which it isn't).
-- CPU clock below 80 MHz — causes WiFi instability.
+- TLS cert pinning — small power win, big code/maintenance cost.
+- CPU clock below 80 MHz — causes Wi-Fi instability.
 - Region-targeted partial refresh — ghosting risk with Bayer-dithered fills is too high.
-- `FULL_REFRESH_EVERY` 4 → 8 — evaluated 2026-07-26 and rejected. Saves ~0.3 mAh/day (~1% of budget, ~⅓ of a day of runtime) in exchange for letting ghosting accumulate over 7 partials instead of 3. The rain chart's Bayer-dithered fills are the worst case for ghost accumulation (many single pixels toggling per wake), which is the same reason region-targeted partial refresh is skipped above. Bad ratio; don't revisit without a visual complaint driving it.
+- Full refresh every 8th wake instead of every 4th — evaluated 2026-07-26 and rejected: ~0.3 mAh/day against ghosting accumulation on the Bayer-dithered rain chart. Now a server constant (`FULL_REFRESH_EVERY` in `schedule.py`).
 - Sleep current optimization — ~30–40 µA is already near the floor for Inkplate 6's onboard regulators.
+- **Next lever, only if HA's `wifi_ms` sensor shows it matters:** keep the access point's BSSID and channel in RTC and pass them to `WiFi.begin()` to skip the scan.

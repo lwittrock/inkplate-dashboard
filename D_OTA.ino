@@ -10,7 +10,15 @@
 //
 // State lives in RTC RAM, protected by a magic-word sentinel because RTC
 // slow memory contents are undefined on cold boot (battery removal).
-// See docs/ota-updates-plan.md for the full design.
+// The design is in CLAUDE.md ("OTA gotchas", "OTA design decisions").
+//
+// When to check (thin client, docs/server-rendering-design.md): the device
+// has no clock any more, so the old "first wake after midnight" gate is gone.
+//   - the server's X-Ota hint, sent on one wake just after midnight;
+//   - the device's own trigger: 48 hours of summed sleep without a check;
+//   - while the server is unreachable: on the second failed wake, then every
+//     12 hours of sleep. OTA must never depend on the server, or a release
+//     that broke the server request could never be replaced over the air.
 
 #include <HTTPUpdate.h>
 #include <esp_ota_ops.h>
@@ -22,14 +30,20 @@
 
 // Sentinel proving the RTC state was initialized by this firmware lineage,
 // not garbage left over from a power loss. Bump if the RTC schema changes.
-#define OTA_RTC_MAGIC 0xC0FFEE42UL
+// 0xC0FFEE42 until the thin client replaced otaLastCheckDay with otaSleptS.
+// (0xC0FFEE44 to 46 were the old firmware's cache sentinels: not reused.)
+#define OTA_RTC_MAGIC 0xC0FFEE47UL
+
+// Seconds of sleep between the device's own checks, and while failing.
+#define OTA_CHECK_EVERY_S         (48UL * 3600)
+#define OTA_CHECK_WHILE_FAILING_S (12UL * 3600)
 
 // Trigger rollback if a new firmware fails to reach markFirmwareValid()
 // this many boots in a row. 3 = one transient failure tolerated.
 #define OTA_BOOT_FAILURE_LIMIT 3
 
 RTC_DATA_ATTR uint32_t otaRtcMagic         = 0;
-RTC_DATA_ATTR uint16_t otaLastCheckDay     = 0xFFFF;  // 0xFFFF = "never"
+RTC_DATA_ATTR uint32_t otaSleptS           = 0;       // sleep since the last check
 RTC_DATA_ATTR char     otaPendingVersion[24]    = {0};
 RTC_DATA_ATTR char     otaLastFailedVersion[24] = {0};
 RTC_DATA_ATTR uint8_t  otaBootAttempts     = 0;
@@ -40,7 +54,7 @@ void initOtaState() {
   if (otaRtcMagic != OTA_RTC_MAGIC) {
     DBGLN("OTA: cold-boot detected, resetting RTC state");
     otaRtcMagic              = OTA_RTC_MAGIC;
-    otaLastCheckDay          = 0xFFFF;
+    otaSleptS                = OTA_CHECK_EVERY_S;  // so a cold boot checks once
     otaPendingVersion[0]     = '\0';
     otaLastFailedVersion[0]  = '\0';
     otaBootAttempts          = 0;
@@ -72,11 +86,11 @@ void checkBootAttempts() {
   otaBootAttempts++;
 }
 
-// Reset the boot-attempts counter and clear pending OTA marker. Called
-// right after initHardware() returns — if WiFi+NTP came up, the firmware
-// is healthy enough to commit to. NOT called at end of setup() because
-// handleNightMode() goToSleep()s without returning, which would let
-// bootAttempts climb across one night and trigger false rollback.
+// Reset the boot-attempts counter and clear pending OTA marker. Called as
+// soon as Wi-Fi is up, before the server request: if Wi-Fi came up, the
+// firmware is healthy enough to commit to, and a server outage must not
+// count against it. A release that breaks only the server request is
+// caught by the OTA triggers while failing instead.
 void markFirmwareValid() {
   if (otaPendingVersion[0] != '\0') {
     DBG("OTA: marked valid after update to ");
@@ -113,31 +127,23 @@ static void performUpdate(const char* version, const char* url) {
   otaPendingVersion[0] = '\0';
 }
 
-// Returns true if we should fetch the manifest this wake.
-// Gated by: NTP synced, lastCheckDay != today.
-// Bypassed entirely if OTA_TEST_FORCE_CHECK is defined.
-// Called BEFORE handleNightMode() in setup(), so night wakes count too —
-// new day rolls over at midnight, so first wake after 00:00 triggers OTA.
-static bool shouldCheckForUpdate() {
-  time_t now = time(nullptr);
-  if (now < 1700000000) {
-    DBGLN("OTA: skip — NTP not synced");
-    return false;
-  }
-
+// The device's own trigger, on a wake that reached the server.
+bool otaOwnTriggerDue() {
 #ifdef OTA_TEST_FORCE_CHECK
-  DBGLN("OTA: TEST mode — forcing check");
+  DBGLN("OTA: TEST mode, forcing check");
   return true;
 #endif
+  return otaSleptS >= OTA_CHECK_EVERY_S;
+}
 
-  struct tm tm_local;
-  localtime_r(&now, &tm_local);
-  uint16_t today = (uint16_t)tm_local.tm_yday;
-  if (today == otaLastCheckDay) {
-    return false;  // already checked today
-  }
-  otaLastCheckDay = today;
-  return true;
+// On a wake where Wi-Fi works but the server does not.
+bool otaFailureTriggerDue(uint8_t failStreak) {
+  return failStreak == FAILS_BEFORE_MESSAGE || otaSleptS >= OTA_CHECK_WHILE_FAILING_S;
+}
+
+// Called by goToSleep() with each sleep's length.
+void otaNoteSleep(uint32_t seconds) {
+  otaSleptS = (otaSleptS > UINT32_MAX - seconds) ? UINT32_MAX : otaSleptS + seconds;
 }
 
 // Fetch version.txt from GitHub. Two-line format: version, then binary URL.
@@ -189,11 +195,16 @@ static bool fetchManifest(char* outVersion, size_t versionSize,
   return true;
 }
 
-// Top-level OTA check. Called once per setup() from Dashboard.ino, after
-// the morning fetches so WiFi is already up. Phase 2: log-only.
+// Fetch the manifest and update if it names a newer release. Called only
+// when a trigger above says so, with Wi-Fi up. The counter restarts even if
+// the manifest can't be fetched: the next trigger retries, not every wake.
 void checkForUpdates() {
-  if (!shouldCheckForUpdate()) return;
-
+#ifdef OTA_SKIP
+  // Bench builds only (config.h.example). CI refuses a CONFIG_H with it.
+  DBGLN("OTA: skipped, OTA_SKIP is set");
+  return;
+#endif
+  otaSleptS = 0;
   DBGLN("OTA: checking for updates...");
   char remoteVersion[24];
   char remoteUrl[256];

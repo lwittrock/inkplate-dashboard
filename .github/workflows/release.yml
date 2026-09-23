@@ -121,6 +121,15 @@ jobs:
           fi
           printf '%s\n' "$SECRETS_H" > secrets.h
           printf '%s\n' "$CONFIG_H"  > config.h
+          # OTA_SKIP and BENCH_MAX_SLEEP_S are for USB bench flashes. A release with
+          # the first would never update again (the device is behind glass); with
+          # the second it would drain its battery in days.
+          for knob in OTA_SKIP BENCH_MAX_SLEEP_S; do
+            if grep -Eq "^[[:space:]]*#[[:space:]]*define[[:space:]]+${knob}([[:space:]]|\$)" config.h; then
+              echo "::error::CONFIG_H defines ${knob}, which is for bench flashes only. Remove it from the secret."
+              exit 1
+            fi
+          done
           # NOTE: do NOT echo file contents — they contain credentials.
           echo "Wrote config.h ($(wc -c < config.h) bytes) and secrets.h ($(wc -c < secrets.h) bytes)"
 

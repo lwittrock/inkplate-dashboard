@@ -1,5 +1,8 @@
 # Handoff: the Inkplate dashboard and the home server
 
+**Superseded on 23 September 2026** by [`server-rendering-design.md`](server-rendering-design.md):
+option D was chosen, and it covers A, B and C. Kept as the record of how the choice was made.
+
 Written 23 September 2026 at the end of a long home-server session, for the next session that
 picks this up, whether that is Lars or an AI agent. Nothing described here as an option has been
 built. The only change already made is the address record under "Already settled".

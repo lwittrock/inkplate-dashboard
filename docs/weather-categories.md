@@ -96,7 +96,8 @@ before with the feed's `weatherdescription`.
 
 ## Checking it
 
-Fixtures in `server/tests/fixtures/`:
+Recorded data in `server/tests/data/` (not `tests/fixtures/`: the deploy's
+self-test renders every folder there and needs a full recording with `meta.json`):
 - `om_week1/`: the live forecast of 24 September 2026 (dry week, high cloud).
 - `om_snow_2026_01/`: 4-8 January 2026 from the Historical Forecast API, with
   KNMI's measured hours (Voorschoten 215, Hoek van Holland 330) in

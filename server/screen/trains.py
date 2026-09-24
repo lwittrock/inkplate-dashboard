@@ -55,9 +55,15 @@ def pick_departures(ctr: list[Departure], hs: list[Departure], now: datetime) ->
         # More than two legs means a via-Rotterdam routing with extra changes.
         return not d.cancelled and d.leg_count <= 2 and d.planned >= now + WALK_TIME
 
+    # Arrivals a clean Centraal trip already reaches: an HS train catching the
+    # same Breda sprinter is no backup, since Centraal is always preferred.
+    ctr_arrivals = {d.arrives for d in ctr if not is_disrupted(d) and d.arrives is not None}
+
     def adds_an_arrival(d: Departure) -> bool:
-        # Catching the same Breda sprinter as a slot already shown adds nothing.
-        return d.arrives is None or all(s.arrives is None or d.arrives < s.arrives for s in out)
+        # Catching the same Breda sprinter as a card already shown adds nothing.
+        # A cancelled card doesn't run, so its arrival doesn't count.
+        shown = {s.arrives for s in out if not s.cancelled}
+        return d.arrives is None or (d.arrives not in shown and d.arrives not in ctr_arrivals)
 
     # No Centraal trips (Trip Planner trouble): HS becomes primary, same filters.
     if not ctr:

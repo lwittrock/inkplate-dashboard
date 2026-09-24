@@ -4,3 +4,6 @@ local.env
 __pycache__/
 .pytest_cache/
 state/
+# Recordings stay local; a fixture the tests or selftest use gets its own ! line.
+tests/fixtures/*
+!tests/fixtures/wall1/

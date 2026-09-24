@@ -25,7 +25,7 @@ the laptop). Next is step 3: the container on the home server and the deploy.
 | `tools/mockups.py` | The screen in its three looks side by side, from a fixture and a synthetic rainy morning |
 | `screen/selftest.py` | The gate a deploy must pass: renders the fixtures, checks the frame and schedule |
 | `deploy/` | CT 106: `deploy.sh` and the systemd units (installed by hand, see below) |
-| `tests/` | Unit tests; `tests/fixtures/<name>/` holds recorded API responses |
+| `tests/` | Unit tests; `tests/fixtures/<name>/` holds recorded API responses. Only `wall1` is tracked (the tests and the self-test use it); new recordings stay local unless given a `!` line in `.gitignore` |
 
 Keep this folder free of `.h` and `.ino` files: CI builds a firmware release
 for any pushed change to those.

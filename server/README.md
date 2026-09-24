@@ -6,8 +6,8 @@ downloads. Design and decisions: [`../docs/server-rendering-design.md`](../docs/
 
 Status: steps 1 and 2 of that document are done (renderer and service, on
 the laptop). Steps 3 and 4 are done: CT 106 has served the screen and deployed itself
-since 24 September 2026, and Home Assistant takes the device's reports. Next
-is step 5, the thin firmware.
+since 24 September 2026, and Home Assistant takes the device's reports. Step 5,
+the thin firmware, was released the same evening (`v2026.09.24-01`).
 
 ## Layout
 

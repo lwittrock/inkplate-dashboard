@@ -1,9 +1,23 @@
 # The thin client: bench test and switch-over
 
 Written 23 September 2026 for step 5 of [server-rendering-design.md](server-rendering-design.md)
-(Phase 10.4 in the home-server repo's `plan.md`). The firmware is on the `thin-client` branch; it
-compiles (1,120,961 bytes, 57% of an OTA slot, greyscale included) but has never run on the device. This is the
-checklist for the evening it does. Each step ends with a **Done when**.
+(Phase 10.4 in the home-server repo's `plan.md`). The firmware was written on the `thin-client`
+branch (1,120,961 bytes, 57% of an OTA slot, greyscale included), and this is the checklist for
+the evening it first ran on the device. Each step ends with a **Done when**.
+
+**Run on 24 September 2026, evening.** Released as `v2026.09.24-01` (`4d2baac`); the device took
+it by USB converge and reported `fw 2026.09.24-01` at 20:46. How each step went:
+
+- **1:** as written; the screen request took 32 ms. The IDE had updated InkplateLibrary to 11.1.2,
+  CI builds with 11.1.0; kept, since 11.1.1 and 11.1.2 change nothing for the Inkplate 6.
+- **2:** smooth greyscale kept. `SMALL_TEXT=crisp` was tried and rejected; 1-bit was seen but not
+  decided, and stays a service setting to revisit on the wall.
+- **3 and 4:** happened by accident. The device reported a nearly flat battery (5%), the footer's
+  battery fill became narrower than a pixel, Pillow raised, and the service crash-looped at its
+  next restart. The panel showed **Server down**, and recovered with a full refresh (`fail=6`)
+  once the fix (`83345b7`) deployed. HA's low-battery warning reached the phone for real.
+- **5:** skipped by choice: it shares the message, back-off and recovery with step 4.
+- **6:** not run.
 
 **Why a bench session and not a straight OTA** (decided 24 September 2026). A switch-over by OTA
 alone works for bugs that still reach Wi-Fi and the server: the next release fixes them over the

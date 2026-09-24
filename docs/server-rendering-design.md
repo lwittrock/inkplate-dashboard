@@ -377,12 +377,15 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    **Done 24 September 2026:** three made-up reports reached the sensors, and the 6% one reached
    the phone.
 5. **Thin firmware.** On the `thin-client` branch: written and compiled 23 September 2026
-   (1,113,605 bytes; the old firmware was 1,251,349), never run on the device. The bench test and
+   (1,113,605 bytes; the old firmware was 1,251,349). The bench test and
    the release are a checklist of their own: [thin-client-switchover.md](thin-client-switchover.md).
    Two bench-only switches make it safe and quick, `OTA_SKIP` and `BENCH_MAX_SLEEP_S`; CI refuses
    to build a release with either. The `CONFIG_H` secret needs no change.
    *Done when:* the morning after the release, the wall shows the server's screen and HA shows
    telemetry.
+   **Released 24 September 2026** as `v2026.09.24-01`, after the bench session; how it went is at
+   the top of the checklist. The bench found one service bug (a battery at 5% or less crashed the
+   render), fixed the same evening.
 6. **Clean up.** `CLAUDE.md` is rewritten for the thin client on the `thin-client` branch (the
    out-of-scope lines on remote logging and battery monitoring are changed there), and the handoff
    is marked superseded; `README.md` is rewritten with a map of which document owns which fact.

@@ -5,8 +5,9 @@ picker and the Buienradar vote, and draws the 800x600 1-bit frame the Inkplate
 downloads. Design and decisions: [`../docs/server-rendering-design.md`](../docs/server-rendering-design.md).
 
 Status: steps 1 and 2 of that document are done (renderer and service, on
-the laptop). Step 3 is running: CT 106 has served the screen and deployed
-itself since 24 September 2026. Next is step 4, Home Assistant.
+the laptop). Steps 3 and 4 are done: CT 106 has served the screen and deployed itself
+since 24 September 2026, and Home Assistant takes the device's reports. Next
+is step 5, the thin firmware.
 
 ## Layout
 

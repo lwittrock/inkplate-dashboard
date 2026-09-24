@@ -366,11 +366,16 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    script, the units, the self-test and hash-pinned requirements are in `server/`.
    *Done when:* a push to `server/` appears on the container by itself, `screen-render` is green
    for a week, and `/preview.png` opens from the laptop.
+   **Built 24 September 2026:** a push (`bee6252`) deployed and restarted the service by itself,
+   `/preview.png` opens from the laptop, and both checks were green an hour later. The week of
+   green `screen-render` runs from then.
 4. **Home Assistant.** The runbook's steps 13 to 17: seven sensors from the webhook (battery,
    voltage, signal, awake and Wi-Fi times, firmware, last seen) and a notification below 15%.
    *Done when:* made-up reports from the laptop show up in HA and a made-up 6% battery reaches the
    phone. The `inkplate` check is the runbook's step 18, at the switch-over in step 5: a check
    that was never pinged does not alert.
+   **Done 24 September 2026:** three made-up reports reached the sensors, and the 6% one reached
+   the phone.
 5. **Thin firmware.** On the `thin-client` branch: written and compiled 23 September 2026
    (1,113,605 bytes; the old firmware was 1,251,349), never run on the device. The bench test and
    the release are a checklist of their own: [thin-client-switchover.md](thin-client-switchover.md).

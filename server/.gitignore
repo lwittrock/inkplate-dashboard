@@ -7,3 +7,5 @@ state/
 # Recordings stay local; a fixture the tests or selftest use gets its own ! line.
 tests/fixtures/*
 !tests/fixtures/wall1/
+!tests/fixtures/om_week1/
+!tests/fixtures/om_snow_2026_01/

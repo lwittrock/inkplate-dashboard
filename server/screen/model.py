@@ -108,7 +108,7 @@ class Snapshot:
     departures: list[Departure] = field(default_factory=list)
     trains_ok: bool = True      # False: NS gave nothing at all, as opposed to "no trains soon"
     battery_v: float | None = None
-    firmware: str | None = None                                   # drawn in the footer when set
+    firmware: str | None = None                                   # drawn in the footer when "dev"
 
 
 def round_half_away(x: float) -> int:

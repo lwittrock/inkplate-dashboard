@@ -218,7 +218,7 @@ def masthead(c: Canvas, snap: Snapshot, night: bool) -> None:
     now, fc = snap.now, snap.forecast
     current = snap.weather.category if snap.weather else None
     c.text(LEFT, 50, greeting(now, fc[0] if fc else None, current), 34, 650)
-    c.text(LEFT + 1, 77, f"{now.day} {MONTHS[now.month - 1]} {now.year}", 16, 420, fill=c.p.text2)
+    c.text(LEFT + 1, 77, f"{now.day} {MONTHS[now.month - 1]}", 16, 420, fill=c.p.text2)
 
     c.rect(LEFT, 91, RIGHT, 93, c.p.text)
 
@@ -513,11 +513,11 @@ def footer(c: Canvas, snap: Snapshot) -> None:
     c.rect(bx + bw + 1, by + 3.5, bx + bw + 3, by + bh - 3.5, c.p.text)
     if pct:
         c.rect(bx + 3, by + 3, bx + 3 + (bw - 6) * pct / 100, by + bh - 3, c.p.text, radius=1)
-    label = f"{pct}%" if pct is not None else ""
-    if snap.firmware:
-        label = f"{snap.firmware}   {label}"
-    if label:
-        c.text(bx - 8, 594, label, 13, 450, fill=c.p.text3, anchor="rs")
+    # No percentage: the generic LiPo curve and a single ADC sample can't back one
+    # up yet (docs/server-rendering-design.md, step 7). The version shows only on
+    # local "dev" builds, for the bench; releases are in HA's firmware sensor.
+    if snap.firmware == "dev":
+        c.text(bx - 8, 594, snap.firmware, 13, 450, fill=c.p.text3, anchor="rs")
 
 
 # --- the whole screen ------------------------------------------------------------------------

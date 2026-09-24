@@ -384,7 +384,13 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    Left for then: a status note in `power-audit.md` with the measured figures. In the home-server repo: `reference.md` (CT 106, secrets, checks),
    the new runbook, `runbooks/home-assistant.md`, `decisions.md`, `plan.md`.
 7. **After a week or two of data:** recompute the battery table, then decide on the fast Wi-Fi
-   reconnect and on the cadence.
+   reconnect and on the cadence. The battery gauge waits for the same data (decided 24 September
+   2026): `_LIPO` in `telemetry.py` is a generic single-cell curve, off by perhaps 5 to 10 points,
+   and each wake reports one ADC sample, where 20 mV of noise moves the flat middle of the curve
+   by about 10 points. With one full discharge in HA's voltage sensor: fit the table to this cell,
+   smooth the reading over the last few reports, and consider showing days left instead of a
+   percentage. All server-side; the low-battery warning at 15% uses the same table. Until then
+   the footer draws the icon without a number.
 
 ## Later, deliberately not now
 

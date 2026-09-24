@@ -71,3 +71,14 @@ def test_night_before_sunrise_and_after_sunset():
     assert render.is_night(Snapshot(now=datetime(2026, 9, 23, 6, 40), forecast=fc))
     assert not render.is_night(Snapshot(now=datetime(2026, 9, 23, 12, 0), forecast=fc))
     assert render.is_night(Snapshot(now=datetime(2026, 9, 23, 19, 40), forecast=fc))
+
+
+@pytest.mark.parametrize("volts", [None, 0.0, 3.0, 3.3, 3.5, 3.6, 3.62, 3.65, 3.7, 4.05, 4.3])
+def test_footer_draws_any_battery_reading(volts):
+    # 24 September 2026: a flat battery (5% or less) made the fill narrower than a
+    # pixel, Pillow raised, and the service crash-looped at start.
+    snap = busy_snapshot()
+    snap.battery_v = volts
+    render.render_grey(snap)
+    render.render_grey(snap, crisp_small=True)
+    render.render_mono(snap)

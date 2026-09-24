@@ -169,6 +169,8 @@ class Canvas:
 
     def rect(self, x0, y0, x1, y1, fill, radius=0.0) -> None:
         box = (x0 * self.s, y0 * self.s, x1 * self.s - 1, y1 * self.s - 1)
+        if box[2] < box[0] or box[3] < box[1]:
+            return      # under a pixel wide, e.g. the battery fill at 5%; Pillow raises
         if radius:
             self.d.rounded_rectangle(box, radius=radius * self.s, fill=fill)
         else:

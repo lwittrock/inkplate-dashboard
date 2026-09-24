@@ -1,16 +1,23 @@
 // ============================================================================
-// INKPLATE WEATHER & TRAIN DASHBOARD
+// INKPLATE DASHBOARD — thin client
 // ============================================================================
-// Main file - defines data structures and program flow
+// The home server draws the screen (docs/server-rendering-design.md). Each
+// wake: connect Wi-Fi, one plain-HTTP request to the screen service on the
+// LAN, draw the 800x600 1-bit frame it returns, sleep for as long as it says.
+// The request reports the battery, firmware and Wi-Fi signal on the way.
+//
+// Everything that used to live here (fetching, the train picker, the layout,
+// night mode, the wake cadence) runs on the server now, so this firmware
+// should rarely change. What stays is load-bearing: Wi-Fi, OTA with its
+// rollback, and a readable message when the server can't be reached.
 
 #include "Inkplate.h"
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
-#include <ArduinoJson.h>
 #include <esp_bt.h>
+#include "esp32/rom/miniz.h"   // the ROM's inflater, for compressed frames
 #include "config.h"
-#include "icons.h"
 
 // Firmware version: CI writes firmware_version.h at build time (see
 // .github/workflows/release.yml). Local builds without that header
@@ -25,8 +32,7 @@
 // ============================================================================
 // DEBUG LOGGING
 // ============================================================================
-// Define DEBUG_LOG=1 in config.h to enable Serial output. Default off saves
-// ~1 s wake time (no Serial.begin delay) and avoids UART tx blocking.
+// Define DEBUG_LOG=1 in config.h to enable Serial output at 115200 baud.
 
 #ifndef DEBUG_LOG
 #define DEBUG_LOG 0
@@ -41,204 +47,73 @@
 #endif
 
 // ============================================================================
-// DATA STRUCTURES
+// SETTINGS (all with defaults, so the CI config.h needs no new field)
 // ============================================================================
 
-// Weather category enumeration
-typedef enum {
-  CLEAR,
-  PARTLY_CLOUDY,
-  OVERCAST,
-  FOG,
-  DRIZZLE,
-  RAIN,
-  RAIN_HEAVY,
-  SNOW,
-  THUNDERSTORM
-} WeatherCategory;
+// The screen service in CT 106. Override in config.h only if it moves.
+#ifndef SCREEN_URL
+#define SCREEN_URL "http://192.168.1.212:8088/v1/screen"
+#endif
 
-// Which Den Haag station a trip departs from.
-typedef enum { ORIGIN_CTR, ORIGIN_HS } TrainOrigin;
+// Frame formats (docs/server-rendering-design.md, "The contract"), both
+// zlib-compressed on the wire:
+//   g4z  greyscale, the library's 3-bit buffer layout: 2 pixels per byte, 0-7
+//   m1z  1-bit: 600 rows of 100 bytes, MSB first, 1 = black
+#define GREY_BYTES     240000
+#define MONO_BYTES     60000
+#define COMPRESSED_MAX 131072   // a frame is ~7-15 KB; anything near this is wrong
 
-// Status of the transfer at Breda → Tilburg Universiteit.
-typedef enum { TRANSFER_OK, TRANSFER_LATE, TRANSFER_CANCELLED } TransferStatus;
+// X-Sleep is clamped to this range; a missing or unreadable header gives the default.
+#define SLEEP_MIN_S     300
+#define SLEEP_MAX_S     28800
+#define SLEEP_DEFAULT_S 1800
 
-// One picked trip for display, fed by fetchTrips (NS Trip Planner v3) and
-// the per-slot picker (A_Calculations.ino). Carries origin tag, transfer
-// status, and Uni arrival so a single struct drives the card layout.
-struct Departure {
-  TrainOrigin origin;
-  char time[6];                  // "HH:MM" actual departure (falls back to planned)
-  char track[6];                 // "12a"
-  char delay[8];                 // "+12m" or ""
-  bool cancelled;
-  char uniArr[6];                // "HH:MM" arrival at TBU
-  TransferStatus transfer;
-  char note[32];                 // reserved (formerly: "Centraal cancelled" overlay; dropped — HS pill is the signal)
-  char plannedDepartureISO[26];  // "2026-05-24T12:19:00+0200" — for cross-origin sort
-  uint8_t legCount;              // NS Trip Planner legs.size(); picker rejects HS substitutes with legCount > 2
-};
-
-// Crossed-concern bag used by the renderer. `windDirection` is populated
-// by Buienradar (fetchBuienradarNow — the live observation source);
-// `hourlyTemp` / `hourlyCount` are populated by Open-Meteo's hourly
-// fetch (fetchOpenMeteoHourly). Bundled here because the renderer wants
-// both alongside the current-weather temp/wind/code primaries.
-struct WeatherExtras {
-  int   windDirection;    // degrees from N, 0-360 (Buienradar)
-  float hourlyTemp[24];   // next 24h starting from current hour (Open-Meteo)
-  int   hourlyCount;      // number of hourly entries actually filled
-};
-
-// Daily weather forecast (calculated from API data)
-struct DayForecast {
-  char dayName[8];           // "Today" / "Mon" etc.
-  int tempMax;
-  int tempMin;
-  int rainProb;              // Keep for display percentage
-  WeatherCategory category;  // Calculated category (not raw WMO code)
-  bool useSunnyVariant;      // Whether to use sun+rain/snow icon variant
-  char sunrise[6];           // "HH:MM"
-  char sunset[6];            // "HH:MM"
-  int     windMaxKmh;        // wind_speed_10m_max — for headline wind override
-  int     gustMaxKmh;        // wind_gusts_10m_max — for headline wind override
-  int     feelsMax;          // apparent_temperature_max — for heat/cold override
-  uint8_t uvMaxX10;          // uv_index_max × 10 — "fully clear" proxy for Glorious tier
-};
+// Failure path: retry soon after one failure, then back off.
+#define RETRY_FIRST_S   600     // after the first failure: nothing drawn yet
+#define RETRY_SHOWN_S   1800    // after the message is up
+#define RETRY_LONG_S    3600    // from the fourth failure
+#define FAILS_BEFORE_MESSAGE 2  // one blip must not replace the dashboard
 
 // ============================================================================
-// GLOBAL OBJECTS
+// STATE THAT SURVIVES DEEP SLEEP
 // ============================================================================
+// RTC RAM survives deep sleep but not a power loss or an OTA reboot (see
+// CLAUDE.md), so every value here must be safe at its zero default.
+
+enum FailKind : uint8_t { FAIL_NONE = 0, FAIL_WIFI = 1, FAIL_SERVER = 2 };
+
+RTC_DATA_ATTR uint32_t wakeCounter   = 0;          // sent as `wake`; 0 = cold boot
+RTC_DATA_ATTR uint8_t  failStreak    = 0;          // consecutive failed wakes
+RTC_DATA_ATTR uint8_t  shownMessage  = FAIL_NONE;  // which message the panel shows, if any
+RTC_DATA_ATTR uint32_t prevAwakeMs   = 0;          // last wake's active time, reported next wake
+RTC_DATA_ATTR uint32_t prevWifiMs    = 0;          // last wake's Wi-Fi connect time
+
+enum FrameFormat : uint8_t { FRAME_MONO = 0, FRAME_GREY = 1 };
+
+// What the server's reply asked for.
+struct ScreenReply {
+  bool        ok;          // 200 with a whole frame, or 204
+  bool        hasFrame;    // 200: draw it; 204: leave the panel as it is
+  bool        fullRefresh; // 1-bit only; greyscale is always a full refresh
+  bool        otaHint;
+  uint32_t    sleepS;
+  FrameFormat format;
+};
+
+// A 1-bit frame lands here; a greyscale one goes straight into the library's
+// 3-bit buffer (display.DMemory4Bit). PSRAM: 60 KB don't fit in static RAM.
+uint8_t* monoFrame = nullptr;
 
 Inkplate display(INKPLATE_1BIT);
 
-// RTC RAM survives deep sleep. Used to count wakes so we can do a full
-// e-ink refresh once an hour and partial refreshes the rest of the time.
-// Counter is 0 on cold boot — the cold boot then renders a full refresh.
-RTC_DATA_ATTR uint32_t wakeCounter = 0;
-
-// Last successful NTP sync (epoch seconds). The ESP32 RTC keeps running
-// across deep sleep and drifts < 1 s/day, so HH:MM stays correct without
-// resyncing on every 15-min wake. initHardware() only triggers a new SNTP
-// when this is older than NTP_RESYNC_MIN, saving ~2–4 s of radio-on time
-// on the 3 of 4 wakes that don't need it.
-RTC_DATA_ATTR time_t lastNtpSync = 0;
-
-// Last-known-good Buienradar values, persisted across deep sleep. If a
-// fetch fails on a given wake we render from cache rather than going back
-// to Open-Meteo or showing an empty section. nowValid / rainValid are
-// independent — a 250-byte raintext failing does not invalidate the
-// 5 current-conditions fields, and vice versa.
-struct BuienradarCache {
-  bool            nowValid;
-  float           temp;
-  WeatherCategory category;
-  float           wind;
-  int             windBearing;
-
-  bool  rainValid;
-  int   rainCount;
-  float rainMmh[24];
-  char  rainLabels[24][6];   // "HH:MM\0"
-};
-RTC_DATA_ATTR BuienradarCache brCache = {};
-
-// Force a full refresh every Nth wake to clear ghosting from partial updates.
-// With SLEEP_DURATION=900 (15 min), 4 = once per hour.
-#ifndef FULL_REFRESH_EVERY
-#define FULL_REFRESH_EVERY 4
-#endif
-
-// Minutes between blocking NTP resyncs. See config.h.example for details.
-#ifndef NTP_RESYNC_MIN
-#define NTP_RESYNC_MIN 60
-#endif
-
-// Adaptive wake cadence — see nextSleepSeconds() in B_Network.ino. Weekday
-// commute windows wake at SLEEP_DURATION; the rest of the weekday uses
-// OFFPEAK_SLEEP_DURATION. Weekends ignore both windows and stay at
-// SLEEP_DURATION all day. Set OFFPEAK_SLEEP_DURATION equal to
-// SLEEP_DURATION to disable the whole scheme.
-#ifndef OFFPEAK_SLEEP_DURATION
-#define OFFPEAK_SLEEP_DURATION (30UL * 60)
-#endif
-#ifndef PEAK_AM_START_MIN
-#define PEAK_AM_START_MIN (6 * 60 + 30)   // 06:30
-#endif
-#ifndef PEAK_AM_END_MIN
-#define PEAK_AM_END_MIN   (9 * 60 + 30)   // 09:30
-#endif
-#ifndef PEAK_PM_START_MIN
-#define PEAK_PM_START_MIN (16 * 60)       // 16:00
-#endif
-#ifndef PEAK_PM_END_MIN
-#define PEAK_PM_END_MIN   (19 * 60 + 30)  // 19:30
-#endif
-
-// Cached-GV (HS) Trip Planner result, persisted across deep sleep. Only
-// served to the picker when Centraal looks clean (no disruptions in the
-// next 5 trips) — any CTR disruption forces a fresh GV fetch so the
-// substitution logic always works on fresh data. See docs/tier1-
-// implementation-plans.md §3 for the design.
-//
-// IMPORTANT: bump HS_CACHE_MAGIC if you change the layout of the Departure
-// struct. The cache reads bytes positionally — a layout change without a
-// magic bump silently reads garbage into the new field.
-#ifndef HS_CACHE_TTL_MIN
-#define HS_CACHE_TTL_MIN 45
-#endif
-// Magic sequence so each RTC cache has a distinct sentinel:
-//   OTA_RTC_MAGIC   = 0xC0FFEE42 (D_OTA.ino)
-//   HS_CACHE_MAGIC  = 0xC0FFEE45 (bumped from 43 when legCount field added)
-//   OM_DAILY_MAGIC  = 0xC0FFEE44 (below)
-// Keep them distinct so a future "bump on layout change" is unambiguous.
-#define HS_CACHE_MAGIC 0xC0FFEE45UL
-
-struct HsTripCache {
-  uint32_t  magic;
-  time_t    fetchedAt;
-  int       count;
-  Departure trips[6];
-};
-RTC_DATA_ATTR HsTripCache hsCache = {};
-
-// Cached Open-Meteo daily forecast (7-day strip + sunrise/sunset).
-// The hourly portion changes every wake (sparkline rolls forward an hour)
-// so hourly is fetched fresh every cycle. The daily portion barely moves
-// within a day, so it's cached and refreshed every OM_DAILY_TTL_MIN
-// minutes OR at calendar-day rollover (so "Today" stays today). See
-// docs/tier1-implementation-plans.md §2.
-//
-// IMPORTANT: bump OM_DAILY_MAGIC if you change the layout of DayForecast.
-#ifndef OM_DAILY_TTL_MIN
-#define OM_DAILY_TTL_MIN 360
-#endif
-// Bumped from 0xC0FFEE44 → 0xC0FFEE46 when windMaxKmh, gustMaxKmh, feelsMax,
-// uvMaxX10 were added to DayForecast for the editorial headline picker.
-#define OM_DAILY_MAGIC 0xC0FFEE46UL
-
-struct OmDailyCache {
-  uint32_t    magic;
-  time_t      fetchedAt;
-  int         count;
-  DayForecast forecast[7];
-};
-RTC_DATA_ATTR OmDailyCache omDailyCache = {};
-
-// Tripwire for the layout-bump discipline (CLAUDE.md). If this fires, the
-// DayForecast layout changed — recompute the size below AND bump
-// OM_DAILY_MAGIC in the same commit, otherwise a stale RTC cache silently
-// reads garbage into the new field offsets.
-static_assert(sizeof(DayForecast) == 56,
-              "DayForecast layout changed — bump OM_DAILY_MAGIC and update this size");
-
 // ============================================================================
-// MAIN EXECUTION
+// MAIN
 // ============================================================================
 
 void setup() {
-  // Power down radios we don't use. Bluetooth controller stays initialized
-  // by default on ESP32-Arduino and leaks power.
+  uint32_t wakeStart = millis();
+
+  // Bluetooth stays initialized by default on ESP32-Arduino and leaks power.
   btStop();
   esp_bt_controller_disable();
 
@@ -246,187 +121,107 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 #endif
-  DBGLN("\n\n=== DASHBOARD v2 (editorial redesign) ===");
-  DBG("FW: "); DBGLN(FIRMWARE_VERSION);
-  DBG("Wake #"); DBGLN(wakeCounter);
+  DBGLN("\n=== DASHBOARD thin client ===");
+  DBG("FW: "); DBG(FIRMWARE_VERSION); DBG("  wake #"); DBGLN(wakeCounter);
 
   display.begin();
-  DBGLN("Display initialized");
+  initOtaState();      // reset OTA RTC state on cold boot (sentinel mismatch)
+  checkBootAttempts(); // may roll back and restart if a new firmware keeps failing
 
-  initOtaState();      // reset OTA RTC state if cold boot (sentinel mismatch)
-  checkBootAttempts(); // may rollback + restart if pending OTA failed too often
+  // Read before the radio is on: Wi-Fi's current draw pulls the reading down.
+  float batteryV = display.readBattery();
 
-  initHardware();
-  DBGLN("Hardware initialized");
+  uint32_t wifiStart = millis();
+  bool wifiOk = connectWifi();
+  prevWifiMs = millis() - wifiStart;
 
-  // Reaching here means WiFi + NTP came up — firmware is healthy.
-  // Mark valid BEFORE night-mode check, because handleNightMode() can
-  // goToSleep() without returning and would otherwise let bootAttempts
-  // climb unbounded across one night.
+  if (!wifiOk) {
+    failedWake(FAIL_WIFI, wakeStart);   // does not return
+  }
+
+  // Wi-Fi came up: this firmware is healthy enough to keep. A server outage
+  // must not count against it, so this comes before the server request.
   markFirmwareValid();
 
-  // OTA manifest check — placed BEFORE handleNightMode() so it can fire
-  // during the night (first wake after midnight triggers it). Lets the
-  // device update while the user is asleep; new firmware has ~7 hours
-  // to soak before the dashboard wakes for the morning.
-  checkForUpdates();
+  // Never freed: deep sleep resets everything.
+  monoFrame = (uint8_t*)ps_malloc(MONO_BYTES);
+  ScreenReply reply = fetchScreen(batteryV);
 
-  handleNightMode();
-  DBGLN("Night mode check passed");
-
-  // Fetch the forecast (hourly + daily) from Open-Meteo. Current weather
-  // and 2h rain nowcast come from Buienradar — see fetchBuienradar* below.
-  DBGLN("Fetching Open-Meteo (forecast only)...");
-  float temp = 0, wind = 0;
-  WeatherCategory currentCategory = OVERCAST;
-  WeatherExtras extras = {};
-  DayForecast weekForecast[7];
-  int forecastCount = 0;
-  float rainData[24];
-  char timeLabels[24][6];
-  int rainCount = 0;
-  bool forecastOk = fetchOpenMeteo(extras, weekForecast, forecastCount);
-  DBG("Forecast: "); DBGLN(forecastOk ? "OK" : "FAIL");
-
-  // Buienradar — current conditions. Live KNMI station observations.
-  DBGLN("Fetching Buienradar (now)...");
-  bool nowFetched = fetchBuienradarNow(temp, wind, currentCategory, extras.windDirection);
-  bool weatherOk = false;
-  if (nowFetched) {
-    brCache.nowValid    = true;
-    brCache.temp        = temp;
-    brCache.category    = currentCategory;
-    brCache.wind        = wind;
-    brCache.windBearing = extras.windDirection;
-    weatherOk = true;
-  } else if (brCache.nowValid) {
-    temp                  = brCache.temp;
-    currentCategory       = brCache.category;
-    wind                  = brCache.wind;
-    extras.windDirection  = brCache.windBearing;
-    weatherOk = true;
-    DBGLN("BR now: using RTC cache");
+  if (!reply.ok) {
+    failedWake(FAIL_SERVER, wakeStart); // does not return
   }
 
-  // Buienradar — 2h rain nowcast.
-  DBGLN("Fetching Buienradar (rain)...");
-  bool rainFetched = fetchBuienradarRain(rainData, timeLabels, rainCount);
-  bool rainOk = false;
-  if (rainFetched) {
-    brCache.rainValid = true;
-    brCache.rainCount = rainCount;
-    for (int i = 0; i < rainCount && i < 24; i++) {
-      brCache.rainMmh[i] = rainData[i];
-      strlcpy(brCache.rainLabels[i], timeLabels[i], sizeof(brCache.rainLabels[i]));
-    }
-    rainOk = true;
-  } else if (brCache.rainValid) {
-    rainCount = brCache.rainCount;
-    for (int i = 0; i < rainCount && i < 24; i++) {
-      rainData[i] = brCache.rainMmh[i];
-      strlcpy(timeLabels[i], brCache.rainLabels[i], sizeof(timeLabels[i]));
-    }
-    rainOk = true;
-    DBGLN("BR rain: using RTC cache");
+  failStreak = 0;
+  if (reply.otaHint || otaOwnTriggerDue()) {
+    checkForUpdates();                  // reboots into new firmware if there is one
   }
 
-  if (weatherOk) {
-    DBG("Now: temp="); DBG(temp);
-    DBG(" wind="); DBG(wind);
-    DBG(" cat="); DBGLN((int)currentCategory);
-  }
-
-  // Fetch train data from Central
-  // Fetch trips from both Centraal and HS to Tilburg Universiteit, then
-  // run the per-slot picker (A_Calculations.ino) to substitute HS trips
-  // when a Centraal slot is disrupted.
-  DBGLN("Fetching trips GVC -> TBU...");
-  Departure ctrRaw[6];
-  int nCtr = fetchTrips(STATION_CODE_CENTRAL, STATION_CODE_DESTINATION, ORIGIN_CTR, ctrRaw, 6);
-  DBG("CTR raw: "); DBGLN(nCtr);
-  nCtr = filterDominatedTrips(ctrRaw, nCtr);
-  DBG("CTR after dominance filter: "); DBGLN(nCtr);
-
-  // Conditional GV fetch — see docs/tier1-implementation-plans.md §3.
-  // Clean CTR → picker won't consult HS → serve cache (or refresh if stale).
-  // Disrupted CTR → always fetch fresh GV; only fall back to cache if that
-  // fetch also fails, which is strictly better than today's nHs=0 behavior.
-  Departure hsRaw[6];
-  int nHs = 0;
-  bool ctrDisrupted = ctrHasDisruption(ctrRaw, nCtr);
-  bool cacheFresh   = (hsCache.magic == HS_CACHE_MAGIC) &&
-                      (lastNtpSync != 0) &&
-                      ((time(nullptr) - hsCache.fetchedAt) < (long)HS_CACHE_TTL_MIN * 60);
-
-  if (!ctrDisrupted && cacheFresh) {
-    nHs = hsCache.count;
-    for (int i = 0; i < nHs && i < 6; i++) hsRaw[i] = hsCache.trips[i];
-    long ageMin = (time(nullptr) - hsCache.fetchedAt) / 60;
-    DBG("HS  raw: "); DBG(nHs);
-    DBG(" (cached, "); DBG(ageMin); DBGLN("m old)");
-  } else {
-    DBG("Fetching trips GV -> TBU...");
-    if (ctrDisrupted) DBGLN(" [CTR disrupted, forcing fresh fetch]");
-    else              DBGLN(" [cache stale/empty]");
-    nHs = fetchTrips(STATION_CODE_HS, STATION_CODE_DESTINATION, ORIGIN_HS, hsRaw, 6);
-    DBG("HS  raw: "); DBGLN(nHs);
-    nHs = filterDominatedTrips(hsRaw, nHs);
-
-    if (nHs > 0) {
-      // Cache the post-filter list — smaller, matches what the picker sees.
-      hsCache.magic     = HS_CACHE_MAGIC;
-      hsCache.fetchedAt = time(nullptr);
-      hsCache.count     = nHs;
-      for (int i = 0; i < nHs && i < 6; i++) hsCache.trips[i] = hsRaw[i];
-    } else if (ctrDisrupted && hsCache.magic == HS_CACHE_MAGIC && hsCache.count > 0) {
-      // Disrupted-path fetch failed — fall back to cache so the picker
-      // still has substitution candidates. Strictly better than today.
-      nHs = hsCache.count;
-      for (int i = 0; i < nHs && i < 6; i++) hsRaw[i] = hsCache.trips[i];
-      long ageMin = (time(nullptr) - hsCache.fetchedAt) / 60;
-      DBG("HS  fetch failed, using cache ("); DBG(ageMin); DBGLN("m old)");
-    }
-  }
-
-  DBG("HS  after dominance filter: "); DBGLN(nHs);
-
-  Departure departures[3];
-  int departureCount = pickDepartures(ctrRaw, nCtr, hsRaw, nHs, departures);
-  DBG("Picked slots: "); DBGLN(departureCount);
-#if DEBUG_LOG
-  for (int i = 0; i < departureCount; i++) {
-    DBG("  slot "); DBG(i);
-    DBG(": "); DBG(departures[i].origin == ORIGIN_HS ? "HS  " : "CTR ");
-    DBG(departures[i].time);
-    DBG(" trk="); DBG(departures[i].track);
-    DBG(" cancelled="); DBG(departures[i].cancelled ? "Y" : "N");
-    DBG(" delay="); DBG(departures[i].delay[0] ? departures[i].delay : "-");
-    DBG(" note="); DBGLN(departures[i].note[0] ? departures[i].note : "-");
-  }
-#endif
-
-  // Network done — power down WiFi before the slow display refresh.
+  // Network done; the panel refresh is slow and needs no radio.
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
-
-  // Drop CPU clock for the display refresh phase. e-ink SPI is bit-banged
-  // slowly and doesn't benefit from 240 MHz; this trims a few mA*sec per wake.
   setCpuFrequencyMhz(80);
 
-  DBGLN("Calling updateDisplay...");
-  updateDisplay(
-    temp, wind, currentCategory, weatherOk, extras,
-    rainData, timeLabels, rainCount, rainOk,
-    weekForecast, forecastCount, forecastOk,
-    departures, departureCount
-  );
-  DBGLN("Display updated!");
+  if (reply.hasFrame) {
+    if (reply.format == FRAME_GREY) drawGrey();
+    else drawFrame(monoFrame, reply.fullRefresh);
+    shownMessage = FAIL_NONE;
+  }
 
   wakeCounter++;
-  DBGLN("Going to sleep...");
-  goToSleep(nextSleepSeconds());
+  prevAwakeMs = millis() - wakeStart;
+  goToSleep(reply.sleepS);
 }
 
 void loop() {
-  // Empty - deep sleep handles the "looping" by restarting setup()
+  // Empty: deep sleep restarts setup() on every wake.
+}
+
+// ============================================================================
+// FAILURE PATH
+// ============================================================================
+
+// A wake that could not reach Wi-Fi or the server. The first failure leaves
+// the panel alone (e-ink keeps its picture without power) and retries soon;
+// from the second, the panel says which part failed. The message is drawn
+// once, not on every failed wake after it.
+void failedWake(FailKind kind, uint32_t wakeStart) {
+  if (failStreak < 255) failStreak++;
+  DBG("Wake failed: "); DBG(kind == FAIL_WIFI ? "no Wi-Fi" : "server");
+  DBG(", streak "); DBGLN(failStreak);
+
+  // OTA must never depend on the server: a release that broke the request
+  // could otherwise never be replaced over the air. Needs Wi-Fi, though.
+  if (kind == FAIL_SERVER && otaFailureTriggerDue(failStreak)) {
+    checkForUpdates();
+  }
+
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  setCpuFrequencyMhz(80);
+
+  if (failStreak >= FAILS_BEFORE_MESSAGE && shownMessage != kind) {
+    drawMessage(kind == FAIL_WIFI ? "No Wi-Fi" : "Server down");
+    shownMessage = kind;
+  }
+
+  uint32_t retry = failStreak < FAILS_BEFORE_MESSAGE ? RETRY_FIRST_S
+                 : failStreak < 4                    ? RETRY_SHOWN_S
+                                                     : RETRY_LONG_S;
+  wakeCounter++;
+  prevAwakeMs = millis() - wakeStart;
+  goToSleep(retry);
+}
+
+void goToSleep(uint32_t seconds) {
+#ifdef BENCH_MAX_SLEEP_S
+  // Bench builds only (config.h.example): short sleeps so a test session
+  // doesn't wait half an hour per wake. CI refuses a CONFIG_H with it.
+  if (seconds > BENCH_MAX_SLEEP_S) seconds = BENCH_MAX_SLEEP_S;
+#endif
+  DBG("Deep sleep: "); DBG(seconds); DBGLN(" s");
+  otaNoteSleep(seconds);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
+  esp_deep_sleep_start();
 }

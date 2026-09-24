@@ -1,18 +1,12 @@
 // ============================================================================
-// NETWORK FUNCTIONS
-// ============================================================================
-// WiFi, NTP time sync, and API data fetching
-
-// ============================================================================
-// NETWORK INFRASTRUCTURE
+// NETWORK: Wi-Fi and the one request to the screen service
 // ============================================================================
 
-void initHardware() {
+// Connect, with the optional static IP from config.h. Returns false when no
+// usable network came up within ~20 s (twice that with the DHCP retry).
+bool connectWifi() {
   WiFi.mode(WIFI_STA);
-  DBG("WiFi MAC: "); DBGLN(WiFi.macAddress());
 
-  // Optional static IP — skips DHCP (~1–2 s faster connect, less radio time).
-  // Define WIFI_STATIC_IP / GATEWAY / SUBNET / DNS in config.h to use it.
 #ifdef WIFI_STATIC_IP
   IPAddress ip, gw, sn, dns;
   ip.fromString(WIFI_STATIC_IP);
@@ -23,821 +17,138 @@ void initHardware() {
 #endif
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-    delay(500);
-    attempts++;
-  }
+  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(500);
 
 #ifdef WIFI_STATIC_IP
-  // Fall back to DHCP and retry once if the static-IP attempt didn't produce
-  // a working network. Without this, a stale static IP (router subnet change,
-  // address collision, typo) leaves the firmware booting fine but with no
-  // usable network — app-level rollback can't help (no crash) AND OTA can't
-  // push a fix. Recovery would require USB reflash.
-  //
-  // Two distinct failure modes, and WL_CONNECTED only catches the first:
-  //   1. Association failed        → status != WL_CONNECTED. Obvious.
-  //   2. Associated, wrong subnet  → status == WL_CONNECTED immediately,
-  //      because a statically-configured stack never has to ask anyone for
-  //      an address. The AP is joined, the IP is set, and nothing is
-  //      reachable. This is what a router swap looks like, and checking
-  //      status alone sails straight past it into five failing fetches.
-  // So probe actual reachability: a DNS lookup has to traverse the gateway
-  // to the configured resolver, which is exactly the path a wrong subnet
-  // breaks. Cheap (one UDP round-trip on a healthy network) and it fails
-  // fast on a broken one. A transient DNS timeout costs one slower wake via
-  // an unnecessary DHCP retry — a fine trade against a silently dead device.
-  bool netUsable = (WiFi.status() == WL_CONNECTED);
-  if (netUsable) {
+  // Fall back to DHCP if the static address gives no working network.
+  // Associated-but-wrong-subnet (a router swap) still reports WL_CONNECTED,
+  // because a static stack never asks anyone for an address; a DNS lookup
+  // has to cross the gateway, which is exactly what a wrong subnet breaks.
+  // Without this, a stale static IP leaves a device that boots fine and can
+  // never reach the network, so neither rollback nor OTA can help it.
+  bool usable = (WiFi.status() == WL_CONNECTED);
+  if (usable) {
     IPAddress probe;
     if (WiFi.hostByName("pool.ntp.org", probe) != 1) {
-      DBGLN("WiFi: associated but DNS probe failed — static IP likely stale");
-      netUsable = false;
+      DBGLN("Wi-Fi: associated but DNS probe failed, static IP likely stale");
+      usable = false;
     }
   }
-
-  if (!netUsable) {
-    DBGLN("WiFi: static-IP attempt failed, retrying with DHCP");
+  if (!usable) {
+    DBGLN("Wi-Fi: static IP failed, retrying with DHCP");
     WiFi.disconnect(true);
     WiFi.config(IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0), IPAddress(0, 0, 0, 0));
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 40) {
-      delay(500);
-      attempts++;
-    }
+    for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(500);
   }
 #endif
 
-  if (WiFi.status() != WL_CONNECTED) {
-    DBGLN("WiFi failed");
-    showError("WiFi Error");
-    goToSleep(600);
-  }
-
-  // Time setup. The RTC keeps running across deep sleep and only drifts
-  // < 1 s/day, so we don't need a fresh SNTP query on every wake. On cold
-  // boot or once NTP_RESYNC_MIN minutes have passed, do the blocking sync;
-  // otherwise just restore the POSIX TZ (env var is wiped each boot) so
-  // localtime() formats HH:MM correctly. Saves ~2–4 s of radio time on
-  // the wakes that skip SNTP.
-  bool needSync = (lastNtpSync == 0) ||
-                  ((time(nullptr) - lastNtpSync) > (long)NTP_RESYNC_MIN * 60);
-
-  if (needSync) {
-    configTzTime(TIMEZONE, "pool.ntp.org");
-    struct tm timeinfo;
-    attempts = 0;
-    while (!getLocalTime(&timeinfo) && attempts < 30) {
-      delay(500);
-      attempts++;
-    }
-    if (getLocalTime(&timeinfo)) {
-      lastNtpSync = time(nullptr);
-      DBGLN("NTP: synced");
-    }
-  } else {
-    setenv("TZ", TIMEZONE, 1);
-    tzset();
-    DBG("NTP: skipped (last sync "); DBG(time(nullptr) - lastNtpSync);
-    DBGLN("s ago)");
-  }
+  bool ok = (WiFi.status() == WL_CONNECTED);
+  DBG("Wi-Fi: "); DBGLN(ok ? WiFi.localIP().toString() : String("failed"));
+  return ok;
 }
 
-// Wake cadence. WiFi-active time is ~92% of the daily energy budget and it
-// scales with wake count, so fewer wakes is the largest remaining lever
-// (see docs/power-audit.md §9 #9). A flat 30 min was rejected there because
-// it makes the 2 h rain nowcast up to 30 min stale — which matters only when
-// you're about to leave the house. So: keep 15 min across the commute
-// windows, halve the rate the rest of the day.
-//
-// Weekends stay at 15 min all day — no fixed commute to anchor the peaks to,
-// and the panel gets read at unpredictable times.
-//
-// Returns SLEEP_DURATION unchanged if the clock isn't readable. That is the
-// safe direction to fail: too-frequent wakes cost battery, too-long ones
-// leave a stale dashboard for hours.
-unsigned long nextSleepSeconds() {
-  struct tm timeinfo;
-  if (!getLocalTime(&timeinfo)) {
-    DBGLN("Cadence: no clock, using default interval");
-    return SLEEP_DURATION;
-  }
-
-  // tm_wday: 0 = Sunday, 6 = Saturday.
-  if (timeinfo.tm_wday == 0 || timeinfo.tm_wday == 6) {
-    DBGLN("Cadence: weekend, peak interval");
-    return SLEEP_DURATION;
-  }
-
-  int nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-  bool peak = (nowMin >= PEAK_AM_START_MIN && nowMin < PEAK_AM_END_MIN) ||
-              (nowMin >= PEAK_PM_START_MIN && nowMin < PEAK_PM_END_MIN);
-
-  DBG("Cadence: weekday "); DBGLN(peak ? "peak" : "off-peak");
-  return peak ? SLEEP_DURATION : OFFPEAK_SLEEP_DURATION;
+// X-Sleep, clamped; SLEEP_DEFAULT_S when missing or not a number.
+static uint32_t parseSleep(const String& s) {
+  if (s.length() == 0) return SLEEP_DEFAULT_S;
+  long v = s.toInt();
+  if (v <= 0) return SLEEP_DEFAULT_S;
+  if (v < SLEEP_MIN_S) return SLEEP_MIN_S;
+  if (v > SLEEP_MAX_S) return SLEEP_MAX_S;
+  return (uint32_t)v;
 }
 
-void handleNightMode() {
-  struct tm timeinfo;
-  if (getLocalTime(&timeinfo)) {
-    int nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-    bool inNight = (nowMin >= NIGHT_START_MIN || nowMin < NIGHT_END_MIN);
-    if (inNight) {
-      int sleepMin = (nowMin >= NIGHT_START_MIN)
-                     ? ((24 * 60 - nowMin) + NIGHT_END_MIN)  // overnight
-                     : (NIGHT_END_MIN - nowMin);             // early morning
-      DBG("Entering Night Mode... sleep "); DBG(sleepMin); DBGLN(" min");
-
-      WiFi.disconnect(true);
-      WiFi.mode(WIFI_OFF);
-      esp_sleep_enable_timer_wakeup((uint64_t)sleepMin * 60 * 1000000ULL);
-      esp_deep_sleep_start();
-    }
-  }
-}
-
-void goToSleep(unsigned long seconds) {
-  DBG("Deep sleep: "); DBG(seconds); DBGLN("s");
-  // WiFi already disconnected by caller; harmless if called twice.
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-  esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
-  esp_deep_sleep_start();
-}
-
-// ============================================================================
-// API DATA FETCHING
-// ============================================================================
-
-// Perform a GET with up to 3 attempts; returns HTTP status code or -1 on failure.
-int httpGetWithRetry(HTTPClient &http, int maxRetries = 3) {
-  for (int attempt = 1; attempt <= maxRetries; attempt++) {
-    int code = http.GET();
-    if (code == 200) return code;
-    DBG("HTTP attempt "); DBG(attempt);
-    DBG(" failed: "); DBGLN(code);
-    if (attempt < maxRetries) delay(1000);
-  }
-  return -1;
-}
-
-// Open-Meteo — current conditions and 2-hour rain come from Buienradar
-// (fetchBuienradarNow / fetchBuienradarRain), so OM only owns the 24h
-// hourly temp curve and the 7-day daily forecast.
-//
-// Split into two URLs: hourly fetched every wake (sparkline rolls forward
-// each hour) and daily fetched only every OM_DAILY_TTL_MIN minutes or on
-// calendar-day rollover. The daily portion is held in RTC RAM
-// (omDailyCache) so most wakes only pay the small hourly fetch. See
-// docs/tier1-implementation-plans.md §2 for the design.
-
-// Hourly-only fetch (~2 KB, ~1.5 s). Runs every wake.
-static bool fetchOpenMeteoHourly(WeatherExtras &extras) {
-  extras.hourlyCount = 0;
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(8000);
-
-  char url[256];
-  snprintf(url, sizeof(url),
-    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-    "&hourly=temperature_2m&forecast_hours=24&timezone=auto",
-    (double)LATITUDE, (double)LONGITUDE);
-
-  if (!http.begin(client, url)) return false;
-  int code = httpGetWithRetry(http);
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-  String response = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, response);
-  if (error) {
-    DBG("OM hourly JSON error: "); DBGLN(error.c_str());
-    return false;
-  }
-
-  JsonArray hourly = doc["hourly"]["temperature_2m"];
-  if (!hourly.isNull()) {
-    int n = min(24, (int)hourly.size());
-    for (int i = 0; i < n; i++) {
-      extras.hourlyTemp[i] = hourly[i] | 0.0f;
-    }
-    extras.hourlyCount = n;
-  }
-  return true;
-}
-
-// Daily-only fetch (~3 KB, ~1.5 s). Runs only when cache is stale, empty,
-// or yesterday's. On success, writes results into `forecast[]` + `forecastCount`.
-static bool fetchOpenMeteoDaily(DayForecast forecast[], int &forecastCount) {
-  forecastCount = 0;
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(8000);
-
-  char url[512];
-  snprintf(url, sizeof(url),
-    "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-    "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,"
-    "sunshine_duration,daylight_duration,precipitation_sum,precipitation_hours,snowfall_sum,"
-    "sunrise,sunset,"
-    "wind_speed_10m_max,wind_gusts_10m_max,apparent_temperature_max,uv_index_max"
-    "&forecast_days=7&timezone=auto",
-    (double)LATITUDE, (double)LONGITUDE);
-
-  if (!http.begin(client, url)) return false;
-  int code = httpGetWithRetry(http);
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-  String response = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, response);
-  if (error) {
-    DBG("OM daily JSON error: "); DBGLN(error.c_str());
-    return false;
-  }
-
-  JsonArray tmax = doc["daily"]["temperature_2m_max"];
-  JsonArray tmin = doc["daily"]["temperature_2m_min"];
-  JsonArray rainProb = doc["daily"]["precipitation_probability_max"];
-  JsonArray wcode = doc["daily"]["weather_code"];
-  JsonArray sunshine = doc["daily"]["sunshine_duration"];
-  JsonArray daylight = doc["daily"]["daylight_duration"];
-  JsonArray precipSum = doc["daily"]["precipitation_sum"];
-  JsonArray precipHours = doc["daily"]["precipitation_hours"];
-  JsonArray snowfall = doc["daily"]["snowfall_sum"];
-  JsonArray dates = doc["daily"]["time"];
-  JsonArray sunriseArr = doc["daily"]["sunrise"];
-  JsonArray sunsetArr  = doc["daily"]["sunset"];
-  JsonArray windMax = doc["daily"]["wind_speed_10m_max"];
-  JsonArray gustMax = doc["daily"]["wind_gusts_10m_max"];
-  JsonArray feelsMaxArr = doc["daily"]["apparent_temperature_max"];
-  JsonArray uvMaxArr = doc["daily"]["uv_index_max"];
-
-  forecastCount = min(7, (int)tmax.size());
-  const char* dayNames[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-
-  for (int i = 0; i < forecastCount; i++) {
-    forecast[i].tempMax = (int)(tmax[i].as<float>());
-    forecast[i].tempMin = (int)(tmin[i].as<float>());
-    forecast[i].rainProb = rainProb[i] | 0;
-
-    int apiCode = wcode[i] | 0;
-    float sunHours = sunshine[i].as<float>() / 3600.0f;
-    float dayHours = daylight[i].as<float>() / 3600.0f;
-    float precip = precipSum[i] | 0.0f;
-    int precipH = precipHours[i] | 0;
-    float snow = snowfall[i] | 0.0f;
-
-    bool useSunnyVariant;
-    forecast[i].category = calculateDailyWeather(
-      apiCode, precip, precipH, snow, sunHours, dayHours, useSunnyVariant);
-    forecast[i].useSunnyVariant = useSunnyVariant;
-
-    // Headline-picker inputs. Round wind/feels to int; UV stored ×10 in a
-    // single byte (range 0–150, clamped). Defaults of 0 are safe — the picker
-    // overrides are all "above threshold" tests, so missing data just doesn't
-    // trigger them.
-    forecast[i].windMaxKmh = (int)(windMax[i] | 0.0f);
-    forecast[i].gustMaxKmh = (int)(gustMax[i] | 0.0f);
-    forecast[i].feelsMax   = (int)(feelsMaxArr[i] | 0.0f);
-    float uv = uvMaxArr[i] | 0.0f;
-    if (uv < 0) uv = 0;
-    if (uv > 15) uv = 15;
-    forecast[i].uvMaxX10 = (uint8_t)(uv * 10.0f);
-
-    // Sunrise / sunset: extract "HH:MM" from "YYYY-MM-DDTHH:MM"
-    forecast[i].sunrise[0] = 0;
-    forecast[i].sunset[0]  = 0;
-    const char* sr = sunriseArr[i].as<const char*>();
-    const char* ss = sunsetArr[i].as<const char*>();
-    if (sr && strlen(sr) >= 16) { memcpy(forecast[i].sunrise, sr + 11, 5); forecast[i].sunrise[5] = 0; }
-    if (ss && strlen(ss) >= 16) { memcpy(forecast[i].sunset,  ss + 11, 5); forecast[i].sunset[5]  = 0; }
-
-    if (i == 0) {
-      strlcpy(forecast[i].dayName, "Today", sizeof(forecast[i].dayName));
+// Read exactly `len` bytes of body into `dst`, within 5 s. Returns what arrived.
+static size_t readBody(HTTPClient& http, uint8_t* dst, size_t len) {
+  WiFiClient* stream = http.getStreamPtr();
+  size_t got = 0;
+  uint32_t deadline = millis() + 5000;
+  while (got < len && millis() < deadline && (http.connected() || stream->available())) {
+    size_t avail = stream->available();
+    if (avail) {
+      got += stream->readBytes(dst + got, min(avail, len - got));
     } else {
-      const char* dateStr = dates[i].as<const char*>();
-      if (dateStr && strlen(dateStr) >= 10) {
-        struct tm t = {};
-        char buf[5];
-        strncpy(buf, dateStr, 4); buf[4] = 0; t.tm_year = atoi(buf) - 1900;
-        strncpy(buf, dateStr + 5, 2); buf[2] = 0; t.tm_mon = atoi(buf) - 1;
-        strncpy(buf, dateStr + 8, 2); buf[2] = 0; t.tm_mday = atoi(buf);
-        mktime(&t);
-        strlcpy(forecast[i].dayName, dayNames[t.tm_wday], sizeof(forecast[i].dayName));
-      } else {
-        strlcpy(forecast[i].dayName, "?", sizeof(forecast[i].dayName));
-      }
+      delay(1);
     }
   }
-
-  return true;
+  return got;
 }
 
-// Public entry point. Always fetches hourly. Fetches daily only when the
-// RTC cache is stale, empty (cold boot), or holds yesterday's data.
-// Returns true if `forecast[]` has weekly data (cached or fresh); hourly
-// availability is reported separately via `extras.hourlyCount`.
-bool fetchOpenMeteo(
-    WeatherExtras &extras,
-    DayForecast forecast[],
-    int &forecastCount
-  ) {
-  forecastCount = 0;
-
-  bool hourlyOk = fetchOpenMeteoHourly(extras);
-  if (!hourlyOk) DBGLN("OM hourly: FAIL");
-
-  // Decide whether the daily portion needs refreshing.
-  time_t now = time(nullptr);
-  bool cachePopulated = (omDailyCache.magic == OM_DAILY_MAGIC) &&
-                        (omDailyCache.count > 0);
-  bool needRefresh = !cachePopulated;
-
-  if (cachePopulated && lastNtpSync != 0) {
-    if ((now - omDailyCache.fetchedAt) >= (long)OM_DAILY_TTL_MIN * 60) {
-      needRefresh = true;
-    } else {
-      // Calendar-day rollover — "Today" must be today.
-      struct tm nowTm, fetchTm;
-      localtime_r(&now, &nowTm);
-      localtime_r(&omDailyCache.fetchedAt, &fetchTm);
-      if (nowTm.tm_yday != fetchTm.tm_yday ||
-          nowTm.tm_year != fetchTm.tm_year) {
-        needRefresh = true;
-      }
-    }
-  }
-
-  if (needRefresh) {
-    DBG("OM daily: ");
-    DBGLN(cachePopulated ? "stale, refreshing" : "empty, fetching");
-    DayForecast fresh[7];
-    int freshCount = 0;
-    if (fetchOpenMeteoDaily(fresh, freshCount) && freshCount > 0) {
-      omDailyCache.magic     = OM_DAILY_MAGIC;
-      omDailyCache.fetchedAt = now;
-      omDailyCache.count     = freshCount;
-      for (int i = 0; i < freshCount && i < 7; i++) {
-        omDailyCache.forecast[i] = fresh[i];
-      }
-      DBG("OM daily: cached "); DBG(freshCount); DBGLN(" days");
-    } else {
-      DBGLN("OM daily: fetch failed (keeping any prior cache)");
-    }
-  } else {
-    long ageMin = (now - omDailyCache.fetchedAt) / 60;
-    DBG("OM daily: cached, "); DBG(ageMin); DBGLN("m old");
-  }
-
-  // Hand cache to caller (fresh data already written above if refresh fired).
-  forecastCount = omDailyCache.count;
-  for (int i = 0; i < forecastCount && i < 7; i++) {
-    forecast[i] = omDailyCache.forecast[i];
-  }
-
-  return forecastCount > 0;
+// Decompress a zlib stream (header and Adler-32 checked) with the ESP32's ROM
+// inflater into exactly `outLen` bytes. The decompressor state (~11 KB) goes
+// on the heap: setup() runs on an 8 KB stack.
+static bool inflateExact(const uint8_t* in, size_t inLen, uint8_t* out, size_t outLen) {
+  tinfl_decompressor* d = (tinfl_decompressor*)malloc(sizeof(tinfl_decompressor));
+  if (!d) return false;
+  tinfl_init(d);
+  size_t inBytes = inLen, outBytes = outLen;
+  tinfl_status st = tinfl_decompress(d, in, &inBytes, out, out, &outBytes,
+                                     TINFL_FLAG_PARSE_ZLIB_HEADER |
+                                     TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF |
+                                     TINFL_FLAG_COMPUTE_ADLER32);
+  free(d);
+  DBG("Screen: inflate status "); DBG((int)st); DBG(", "); DBG(outBytes); DBGLN(" bytes");
+  return st == TINFL_STATUS_DONE && outBytes == outLen;
 }
 
-// ============================================================================
-// BUIENRADAR — live KNMI station observations + radar nowcast
-// ============================================================================
+// GET /v1/screen. The query string is this wake's report and the formats this
+// firmware can draw; X-Format says which one came back. A greyscale frame is
+// decompressed straight into the library's 3-bit buffer; a 1-bit one into
+// `monoFrame`. Anything that doesn't decompress to exactly the format's size
+// is a failure, so a damaged download can never reach the panel.
+ScreenReply fetchScreen(float batteryV) {
+  ScreenReply r = { false, false, true, false, SLEEP_DEFAULT_S, FRAME_MONO };
 
-// The feed exposes the weather icon as a URL (".../weather/30x30/aa.png")
-// rather than a structured code field. Extract the filename stem, lowercase
-// it, and collapse doubled letters ("aa" → "a") so categorizeBuienradarIcon
-// sees a single-letter input. "cc" is kept as-is because it's a distinct
-// entry in the mapping table.
-// Writes "" into `out` if the URL doesn't match the expected shape.
-static void extractBuienradarIconCode(const char* iconurl, char* out, size_t outSize) {
-  if (outSize > 0) out[0] = 0;
-  if (!iconurl || outSize < 2) return;
-  const char* slash = strrchr(iconurl, '/');
-  const char* dot   = strrchr(iconurl, '.');
-  if (!slash || !dot || dot <= slash + 1) return;
-  size_t len = (size_t)(dot - slash - 1);
-  if (len == 0 || len >= outSize) return;
-  memcpy(out, slash + 1, len);
-  out[len] = 0;
-  for (size_t i = 0; out[i]; i++) {
-    if (out[i] >= 'A' && out[i] <= 'Z') out[i] += 32;
-  }
-  if (out[0] && out[1] == out[0] && out[2] == 0 && out[0] != 'c') {
-    out[1] = 0;
-  }
-}
-
-// Fetch the master JSON feed, pick the closest non-stale station with a
-// usable icon, and return its current readings translated into the
-// dashboard's internal types. Failure leaves the output params untouched
-// so the caller's RTC cache fallback can take over.
-//
-// Picker: nearest-station-with-outlier-rejection. Collect up to
-// BUIENRADAR_MAX_CANDIDATES nearest valid stations, then within
-// BUIENRADAR_CONSENSUS_KM take the mode of the icon category (tie → closest).
-// Temperature / wind / icon are then taken from the closest station that
-// voted for the winning category, so we never display readings from a
-// station whose icon we just outvoted. See CLAUDE.md "Buienradar consensus
-// picker" for the caveats — single-station outliers like Voorschoten reporting
-// OVERCAST while all neighbours report CLEAR motivated this; the approach
-// will lag by one wake during frontal passages and is worth revisiting once
-// real disagreement data is logged.
-bool fetchBuienradarNow(float &temp, float &wind,
-                        WeatherCategory &category, int &windBearing) {
-  DBG("BR now heap before: "); DBGLN(ESP.getFreeHeap());
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(8000);
-
-  if (!http.begin(client, BUIENRADAR_FEED_URL)) return false;
-
-  int code = httpGetWithRetry(http);
-  if (code != 200) {
-    DBG("BR now HTTP fail: "); DBGLN(code);
-    http.end();
-    return false;
-  }
-
-  String response = http.getString();
-  http.end();
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, response);
-  response = String();
-  if (err) {
-    DBG("BR now JSON err: "); DBGLN(err.c_str());
-    return false;
-  }
-
-  JsonArray stations = doc["actual"]["stationmeasurements"];
-  if (stations.isNull()) {
-    DBGLN("BR now: no stationmeasurements[]");
-    return false;
-  }
-
-  // Find current time for the freshness filter. Both device and Buienradar
-  // run on Amsterdam local time, so wall-clock comparison is fine.
-  struct tm tnow;
-  bool haveNow = getLocalTime(&tnow);
-  time_t nowEpoch = haveNow ? mktime(&tnow) : 0;
-
-  struct Cand {
-    float dist;
-    WeatherCategory cat;
-    float temp;
-    float ms;
-    int bearing;
-    char icon[4];
-    char name[24];
-  };
-  Cand cands[BUIENRADAR_MAX_CANDIDATES];
-  int nCands = 0;
-
-  for (JsonObject s : stations) {
-    char iconBuf[4];
-    extractBuienradarIconCode(s["iconurl"] | (const char*)nullptr,
-                              iconBuf, sizeof(iconBuf));
-    if (!iconBuf[0]) continue;
-    if (s["temperature"].isNull()) continue;
-
-    if (haveNow) {
-      time_t tsEpoch = parseISOToLocal(s["timestamp"] | (const char*)nullptr);
-      if (tsEpoch > 0 &&
-          (nowEpoch - tsEpoch) > (long)BUIENRADAR_STALE_MIN * 60) continue;
-    }
-
-    float lat = s["lat"] | 0.0f;
-    float lon = s["lon"] | 0.0f;
-    float d = haversineKm(LATITUDE, LONGITUDE, lat, lon);
-
-    // Insertion-sort into a fixed-size buffer kept sorted by distance.
-    if (nCands == BUIENRADAR_MAX_CANDIDATES &&
-        d >= cands[BUIENRADAR_MAX_CANDIDATES - 1].dist) continue;
-
-    int pos = nCands < BUIENRADAR_MAX_CANDIDATES ? nCands
-                                                 : BUIENRADAR_MAX_CANDIDATES - 1;
-    while (pos > 0 && cands[pos - 1].dist > d) {
-      cands[pos] = cands[pos - 1];
-      pos--;
-    }
-
-    Cand &c = cands[pos];
-    c.dist = d;
-    strncpy(c.icon, iconBuf, sizeof(c.icon));
-    c.icon[sizeof(c.icon) - 1] = 0;
-    c.cat = categorizeBuienradarIcon(c.icon);
-    c.temp = s["temperature"] | 0.0f;
-    c.ms   = s["windspeed"]   | 0.0f;
-    int b = s["winddirectiondegrees"] | -1;
-    if (b < 0) {
-      b = bearingFromDutchCardinal(s["winddirection"] | "");
-      if (b < 0) b = 0;
-    }
-    c.bearing = b;
-    const char* nm = s["stationname"] | "";
-    strncpy(c.name, nm, sizeof(c.name));
-    c.name[sizeof(c.name) - 1] = 0;
-
-    if (nCands < BUIENRADAR_MAX_CANDIDATES) nCands++;
-  }
-
-  if (nCands == 0) {
-    DBGLN("BR now: no usable station");
-    return false;
-  }
-
-  // Mode of icon category across stations within the consensus radius.
-  // If only one station is in range we degrade gracefully to "nearest wins".
-  const int NUM_CATS = THUNDERSTORM + 1;
-  int votes[NUM_CATS] = {0};
-  int inRange = 0;
-  for (int i = 0; i < nCands; i++) {
-    if (cands[i].dist <= BUIENRADAR_CONSENSUS_KM) {
-      votes[cands[i].cat]++;
-      inRange++;
-    }
-  }
-
-  int maxVotes = 0;
-  for (int c = 0; c < NUM_CATS; c++) if (votes[c] > maxVotes) maxVotes = votes[c];
-
-  WeatherCategory winningCat = cands[0].cat;  // default to nearest
-  if (maxVotes > 0) {
-    // Tiebreak by closest: cands is sorted, so first hit at maxVotes wins.
-    for (int i = 0; i < nCands; i++) {
-      if (cands[i].dist <= BUIENRADAR_CONSENSUS_KM &&
-          votes[cands[i].cat] == maxVotes) {
-        winningCat = cands[i].cat;
-        break;
-      }
-    }
-  }
-
-  // Source the displayed numbers from the closest in-range voter for the
-  // winning category. Falls back to the nearest candidate overall.
-  int srcIdx = 0;
-  for (int i = 0; i < nCands; i++) {
-    if (cands[i].cat == winningCat &&
-        cands[i].dist <= BUIENRADAR_CONSENSUS_KM) {
-      srcIdx = i;
-      break;
-    }
-  }
-
-  Cand &src = cands[srcIdx];
-  temp        = src.temp;
-  wind        = src.ms * 3.6f;
-  category    = src.cat;
-  windBearing = src.bearing;
-
-  DBG("BR now picker: src="); DBG(src.name);
-  DBG(" ("); DBG(src.dist); DBG(" km) code="); DBG(src.icon);
-  DBG(" inRange="); DBG(inRange); DBG("/"); DBGLN(nCands);
-#if DEBUG_LOG
-  for (int i = 0; i < nCands; i++) {
-    DBG("  cand["); DBG(i); DBG("] "); DBG(cands[i].name);
-    DBG(" "); DBG(cands[i].dist); DBG("km icon="); DBG(cands[i].icon);
-    DBG(" cat="); DBGLN((int)cands[i].cat);
-  }
-#endif
-  return true;
-}
-
-// Fetch the hyper-local 2h rain nowcast (24 lines of "VVV|HH:MM" at 5-min
-// spacing). Converts each line to mm/h via the published log formula.
-// On success, writes up to 24 entries into `rainData` and the matching
-// "HH:MM\0" strings into `timeLabels[i]` (caller allocates [][6]).
-bool fetchBuienradarRain(float rainData[], char timeLabels[][6], int &rainCount) {
-  rainCount = 0;
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(8000);
-
-  char url[160];
-  snprintf(url, sizeof(url), BUIENRADAR_RAIN_URL,
-           (double)LATITUDE, (double)LONGITUDE);
-
-  if (!http.begin(client, url)) return false;
-
-  int code = httpGetWithRetry(http);
-  if (code != 200) {
-    DBG("BR rain HTTP fail: "); DBGLN(code);
-    http.end();
-    return false;
-  }
-
-  String body = http.getString();
-  http.end();
-
-  if (body.length() < 5) {
-    DBGLN("BR rain: empty body");
-    return false;
-  }
-
-  int idx = 0;
-  int from = 0;
-  while (idx < 24 && from < (int)body.length()) {
-    int nl = body.indexOf('\n', from);
-    int lineEnd = (nl < 0) ? body.length() : nl;
-    int pipe = body.indexOf('|', from);
-    if (pipe > from && pipe < lineEnd && (lineEnd - pipe) >= 6) {
-      int v = body.substring(from, pipe).toInt();
-      float mmh = (v <= 0) ? 0.0f : powf(10.0f, ((float)v - 109.0f) / 32.0f);
-      rainData[idx] = mmh;
-      // "HH:MM" lives immediately after the pipe.
-      strlcpy(timeLabels[idx], body.substring(pipe + 1, pipe + 6).c_str(), sizeof(timeLabels[idx]));
-      idx++;
-    }
-    if (nl < 0) break;
-    from = nl + 1;
-  }
-
-  rainCount = idx;
-  DBG("BR rain: parsed "); DBG(rainCount); DBGLN(" lines");
-  return (rainCount > 0);
-}
-
-// NS Trip Planner v3: fetch up to maxCount trips from fromStation to toStation.
-// Streams the response through ArduinoJson with a Filter so the parsed tree
-// stays small (~5 KB) instead of holding the full ~90 KB payload in heap.
-// Per CLAUDE.md, streaming over WiFiClientSecure was flaky for the merged
-// Open-Meteo call — being re-validated here on a similarly large payload.
-int fetchTrips(const char* fromStation, const char* toStation,
-               TrainOrigin origin, Departure out[], int maxCount) {
-  DBG("fetchTrips heap before: "); DBGLN(ESP.getFreeHeap());
-
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient http;
-  http.setTimeout(8000);
-
-  char url[256];
+  char url[288];
   snprintf(url, sizeof(url),
-    "https://gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips"
-    "?fromStation=%s&toStation=%s&maxJourneys=%d",
-    fromStation, toStation, maxCount);
+           "%s?fmt=g4z,m1z&batt=%.2f&fw=%s&rssi=%d&wake=%lu&fail=%u&awake_ms=%lu&wifi_ms=%lu",
+           SCREEN_URL, batteryV, FIRMWARE_VERSION, (int)WiFi.RSSI(),
+           (unsigned long)wakeCounter, (unsigned)failStreak,
+           (unsigned long)prevAwakeMs, (unsigned long)prevWifiMs);
+
+  WiFiClient client;
+  HTTPClient http;
+  http.setConnectTimeout(2000);
+  http.setTimeout(5000);
+  const char* headerKeys[] = { "X-Sleep", "X-Refresh", "X-Ota", "X-Format" };
+  http.collectHeaders(headerKeys, 4);
 
   if (!http.begin(client, url)) {
-    DBGLN("ERROR: http.begin() failed (Trip Planner)");
-    return 0;
+    DBGLN("Screen: http.begin failed");
+    return r;
   }
-  http.addHeader("Ocp-Apim-Subscription-Key", NS_API_KEY);
+  uint32_t start = millis();
+  int code = http.GET();
+  DBG("Screen: HTTP "); DBG(code); DBG(" in "); DBG(millis() - start); DBGLN(" ms");
 
-  int code = httpGetWithRetry(http);
-  if (code != 200) {
-    DBG("Trip Planner HTTP fail: "); DBGLN(code);
-    http.end();
-    return 0;
+  if (code == 200 || code == 204) {
+    r.sleepS      = parseSleep(http.header("X-Sleep"));
+    r.otaHint     = (http.header("X-Ota") == "1");
+    r.fullRefresh = (http.header("X-Refresh") != "partial");
   }
 
-  // Filter: only the fields the picker + card renderer need.
-  // [0] on arrays applies the filter to all array elements.
-  JsonDocument filter;
-  JsonObject leg = filter["trips"][0]["legs"][0].to<JsonObject>();
-  leg["cancelled"] = true;
-  leg["partCancelled"] = true;
-  JsonObject lo = leg["origin"].to<JsonObject>();
-  lo["plannedDateTime"] = true;
-  lo["actualDateTime"] = true;
-  lo["plannedTrack"] = true;
-  JsonObject ld = leg["destination"].to<JsonObject>();
-  ld["plannedDateTime"] = true;
-  ld["actualDateTime"] = true;
-
-  // Slurp the full body into a String before parsing. Streaming straight
-  // from getStream() over WiFiClientSecure intermittently returns
-  // IncompleteInput when the TLS buffer drains mid-parse on the ~90 KB
-  // Trip Planner payload — same issue that pushed fetchOpenMeteo to slurp.
-  // The Filter still keeps the parsed JsonDoc small (~5 KB) so heap peak
-  // is dominated by the transient String, not the parse tree.
-  String response = http.getString();
+  int size = http.getSize();
+  String fmt = http.header("X-Format");
+  if (code == 204) {
+    r.ok = true;           // keep the panel as it is
+  } else if (code == 200 && size > 0 && size <= COMPRESSED_MAX && (fmt == "g4z" || fmt == "m1z")) {
+    uint8_t* body = (uint8_t*)ps_malloc(size);
+    if (body) {
+      size_t got = readBody(http, body, size);
+      DBG("Screen: "); DBG(fmt); DBG(" "); DBG(got); DBGLN(" bytes");
+      if (got == (size_t)size) {
+        if (fmt == "g4z") {
+          r.format = FRAME_GREY;
+          r.ok = inflateExact(body, got, display.DMemory4Bit, GREY_BYTES);
+        } else {
+          r.format = FRAME_MONO;
+          r.ok = monoFrame && inflateExact(body, got, monoFrame, MONO_BYTES);
+        }
+        r.hasFrame = r.ok;
+      }
+      free(body);
+    }
+  }
   http.end();
-
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, response,
-                                             DeserializationOption::Filter(filter));
-  response = String();  // free the ~90 KB buffer immediately
-
-  if (err) {
-    DBG("Trip Planner JSON err: "); DBGLN(err.c_str());
-    return 0;
-  }
-
-  JsonArray trips = doc["trips"];
-  if (trips.isNull()) {
-    DBGLN("Trip Planner: no trips[] in response");
-    return 0;
-  }
-
-  int found = 0;
-  for (JsonObject trip : trips) {
-    if (found >= maxCount) break;
-    JsonArray legs = trip["legs"];
-    if (legs.isNull() || legs.size() == 0) continue;
-
-    JsonObject firstLeg = legs[0];
-    JsonObject lastLeg  = legs[legs.size() - 1];
-
-    const char* planned = firstLeg["origin"]["plannedDateTime"] | (const char*)nullptr;
-    const char* actual  = firstLeg["origin"]["actualDateTime"]  | (const char*)nullptr;
-    const char* track   = firstLeg["origin"]["plannedTrack"]    | "?";
-
-    if (!planned || strlen(planned) < 16) continue;
-
-    Departure& d = out[found];
-    d.origin = origin;
-    d.note[0] = 0;
-    d.legCount = (uint8_t)min((int)legs.size(), 255);
-
-    // Departure time: prefer actual, fall back to planned. Empty actual does
-    // NOT mean cancelled — it means no realtime data yet (e.g. trip far ahead).
-    const char* useTime = (actual && strlen(actual) >= 16) ? actual : planned;
-    memcpy(d.time, useTime + 11, 5);
-    d.time[5] = 0;
-
-    strlcpy(d.track, track, sizeof(d.track));
-
-    bool firstCancelled = (firstLeg["cancelled"]     | false) ||
-                          (firstLeg["partCancelled"] | false);
-    d.cancelled = firstCancelled;
-
-    d.delay[0] = 0;
-    if (!firstCancelled && actual && strlen(actual) >= 16) {
-      int delayMin = calculateDelay(planned, actual);
-      if (delayMin >= 1) {
-        snprintf(d.delay, sizeof(d.delay), "+%dm", delayMin);
-      }
-    }
-
-    // Uni arrival from the final leg's destination
-    const char* arrPlanned = lastLeg["destination"]["plannedDateTime"] | (const char*)nullptr;
-    const char* arrActual  = lastLeg["destination"]["actualDateTime"]  | (const char*)nullptr;
-    const char* useArr = (arrActual && strlen(arrActual) >= 16) ? arrActual : arrPlanned;
-    d.uniArr[0] = 0;
-    if (useArr && strlen(useArr) >= 16) {
-      memcpy(d.uniArr, useArr + 11, 5);
-      d.uniArr[5] = 0;
-    }
-
-    // Transfer status from the final leg (the Breda→TBU sprinter).
-    // Spike showed all DH→TBU trips have 2 legs; single-leg branch is
-    // defensive for unexpected shapes.
-    bool lastCancelled = (lastLeg["cancelled"]     | false) ||
-                         (lastLeg["partCancelled"] | false);
-    if (legs.size() == 1) {
-      d.transfer = TRANSFER_OK;
-    } else if (lastCancelled) {
-      d.transfer = TRANSFER_CANCELLED;
-    } else {
-      const char* lp = lastLeg["origin"]["plannedDateTime"] | (const char*)nullptr;
-      const char* la = lastLeg["origin"]["actualDateTime"]  | (const char*)nullptr;
-      if (lp && la && strlen(lp) >= 16 && strlen(la) >= 16 &&
-          calculateDelay(lp, la) >= 5) {
-        d.transfer = TRANSFER_LATE;
-      } else {
-        d.transfer = TRANSFER_OK;
-      }
-    }
-
-    strlcpy(d.plannedDepartureISO, planned, sizeof(d.plannedDepartureISO));
-
-    found++;
-  }
-
-  DBG("fetchTrips from "); DBG(fromStation); DBG(": parsed "); DBGLN(found);
-#if DEBUG_LOG
-  for (int i = 0; i < found; i++) {
-    DBG("  trip["); DBG(i); DBG("] "); DBG(out[i].time);
-    DBG(" -> Uni "); DBG(out[i].uniArr);
-    DBG(" legs="); DBG(out[i].legCount);
-    DBG(" track="); DBG(out[i].track);
-    if (out[i].cancelled) DBG(" CANCELLED");
-    if (out[i].delay[0]) { DBG(" delay="); DBG(out[i].delay); }
-    DBGLN("");
-  }
-#endif
-  DBG("fetchTrips heap after:  "); DBGLN(ESP.getFreeHeap());
-  return found;
+  return r;
 }
-

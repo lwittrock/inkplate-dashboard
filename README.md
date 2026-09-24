@@ -7,11 +7,9 @@ newspaper-style 1-bit layout on an Inkplate 6 behind glass on the wall.
 Personal hobby project, shared in case it's useful as a reference. Not actively supporting forks;
 if you want to adapt it to your city or route, expect to read the code.
 
-> **Status, September 2026: moving to a server-rendered screen.** The server half (`server/`) is
-> built and tested; the thin device firmware is on the `thin-client` branch until its switch-over
-> ([docs/thin-client-switchover.md](docs/thin-client-switchover.md)). Until then the firmware on
-> `master`, and on the wall, is the previous self-contained one, which fetched and drew everything
-> itself.
+> **Status: server-rendered since the thin client's release** (Phase 10.4, checklist in
+> [docs/thin-client-switchover.md](docs/thin-client-switchover.md)). The previous self-contained
+> firmware, which fetched and drew everything itself, is in the git history before that merge.
 
 ---
 

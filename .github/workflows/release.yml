@@ -60,7 +60,6 @@ jobs:
       # Verified against local Arduino IDE on 2026-05-25.
       CORE_VERSION: "8.1.0"
       INKPLATE_LIB_VERSION: "11.1.0"
-      ARDUINOJSON_VERSION: "7.4.3"
 
     steps:
       - uses: actions/checkout@v4
@@ -108,7 +107,6 @@ jobs:
       - name: Install libraries
         run: |
           arduino-cli lib install "InkplateLibrary@${INKPLATE_LIB_VERSION}"
-          arduino-cli lib install "ArduinoJson@${ARDUINOJSON_VERSION}"
           arduino-cli lib list
 
       - name: Inject secrets and config
@@ -124,6 +122,15 @@ jobs:
           fi
           printf '%s\n' "$SECRETS_H" > secrets.h
           printf '%s\n' "$CONFIG_H"  > config.h
+          # OTA_SKIP and BENCH_MAX_SLEEP_S are for USB bench flashes. A release with
+          # the first would never update again (the device is behind glass); with
+          # the second it would drain its battery in days.
+          for knob in OTA_SKIP BENCH_MAX_SLEEP_S; do
+            if grep -Eq "^[[:space:]]*#[[:space:]]*define[[:space:]]+${knob}([[:space:]]|\$)" config.h; then
+              echo "::error::CONFIG_H defines ${knob}, which is for bench flashes only. Remove it from the secret."
+              exit 1
+            fi
+          done
           # NOTE: do NOT echo file contents — they contain credentials.
           echo "Wrote config.h ($(wc -c < config.h) bytes) and secrets.h ($(wc -c < secrets.h) bytes)"
 

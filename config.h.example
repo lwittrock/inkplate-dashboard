@@ -3,144 +3,59 @@
 
 // ============================================================================
 // Copy this file to config.h. Secrets live in secrets.h (also gitignored).
-// Both files are gitignored — never commit them.
+// Both files are gitignored — never commit them. In production the CI
+// secrets CONFIG_H and SECRETS_H are the device's config (see CLAUDE.md).
 // ============================================================================
 
 #include "secrets.h"
 
-// ============================================================================
-// LOCATION
-// ============================================================================
-
-const float LATITUDE = 52.0705;    // Delft, Netherlands
-const float LONGITUDE = 4.3007;
+// The thin client needs nothing here: every setting has a default in code.
+// Location, stations, the wake cadence, night mode and the refresh rhythm
+// all moved to the screen service on the home server. An older config.h
+// that still defines them compiles fine; the firmware ignores them.
 
 // ============================================================================
-// TIMING CONFIGURATION
+// OPTIONAL: STATIC IP (strongly recommended: skips DHCP on every wake)
 // ============================================================================
-
-const unsigned long SLEEP_DURATION = 15 * 60;  // seconds
-
-// Night mode: device skips fetches/render between these times.
-// Minutes since midnight (so 23 * 60 + 30 = 1410 means 23:30).
-// Renamed from NIGHT_START/NIGHT_END (hours) in 2026-05; the rename
-// is deliberate so a stale config can't silently misinterpret hours
-// as minutes. See CLAUDE.md "boot-path discipline".
-const int NIGHT_START_MIN = 23 * 60 + 30;  // 23:30
-const int NIGHT_END_MIN   = 6  * 60 + 30;  // 06:30
-
-// ============================================================================
-// TRAIN CONFIGURATION
-// ============================================================================
-
-// Origin stations and the single transfer destination. The Trip Planner
-// (NS API v3) is queried twice — GVC → DEST and GV → DEST — and a per-slot
-// picker (A_Calculations.ino) substitutes HS trips when a Centraal slot is
-// disrupted. See drawTrains in C_Display.ino for the card layout.
-const char* STATION_CODE_CENTRAL     = "GVC";
-const char* STATION_CODE_HS          = "GV";
-const char* STATION_CODE_DESTINATION = "TBU";  // Tilburg Universiteit
-
-// ============================================================================
-// WEATHER & DISPLAY CONSTANTS
-// ============================================================================
-
-const char* TIMEZONE = "CET-1CEST,M3.5.0,M10.5.0/3";  // Amsterdam POSIX TZ string
-
-// Minutes between blocking NTP resyncs. The ESP32 RTC keeps running across
-// deep sleep and drifts < 1 s/day, so wakes within this window just restore
-// the POSIX TZ instead of starting a fresh SNTP query. Default 60 minutes
-// covers ~3 of every 4 wakes at SLEEP_DURATION=900 and is more than enough
-// accuracy for a HH:MM display.
-#define NTP_RESYNC_MIN 60
-
-// ============================================================================
-// BUIENRADAR (live KNMI observations — for current weather + 2h rain)
-// ============================================================================
-// No key required. Open-Meteo is kept for the 24h hourly + 7-day daily
-// forecast; Buienradar replaces Open-Meteo's current-conditions and
-// 15-min precipitation blocks because its data comes from physical KNMI
-// ground stations (10-min cadence) and radar nowcast (5-min cadence),
-// avoiding the "phantom cloud" model artefacts.
-#define BUIENRADAR_FEED_URL "https://data.buienradar.nl/2.0/feed/json"
-#define BUIENRADAR_RAIN_URL "https://gpsgadget.buienradar.nl/data/raintext?lat=%.2f&lon=%.2f"
-// Skip stations whose latest reading is older than this many minutes.
-#define BUIENRADAR_STALE_MIN 60
-// Consensus radius for the icon-category vote across nearby stations.
-// Stations within this distance get one vote; mode wins, ties → closest.
-// See CLAUDE.md "Buienradar consensus picker" for the rationale.
-#define BUIENRADAR_CONSENSUS_KM 30.0f
-#define BUIENRADAR_MAX_CANDIDATES 6
-
-// ============================================================================
-// OPTIONAL: DEBUG LOGGING
-// ============================================================================
-// Set to 1 to enable Serial output at 115200 baud. Default 0 saves ~200 ms
-// of wake time and avoids UART tx blocking when no monitor is attached.
-// #define DEBUG_LOG 1
-
-// ============================================================================
-// OPTIONAL: STATIC IP
-// ============================================================================
-// Skips DHCP (~1–2 s faster connect, less radio time).
-// If any of the four are missing, DHCP is used.
-// #define WIFI_STATIC_IP "192.168.1.42"
+// If the static address stops working (a router swap), the firmware falls
+// back to DHCP by itself. Production uses 192.168.1.220, bound on the router.
+// #define WIFI_STATIC_IP "192.168.1.220"
 // #define WIFI_GATEWAY   "192.168.1.1"
 // #define WIFI_SUBNET    "255.255.255.0"
 // #define WIFI_DNS       "192.168.1.1"
 
 // ============================================================================
-// OPTIONAL: OTA (Over-The-Air firmware updates)
+// OPTIONAL: THE SCREEN SERVICE
 // ============================================================================
-// See docs/ota-updates-plan.md. The manifest URL has a sensible default in
-// D_OTA.ino; override here only if you fork the repo or change the manifest
-// hosting branch.
+// Default: http://192.168.1.212:8088/v1/screen (CT 106). Override only if
+// the service moves, e.g. to a laptop for a bench test.
+// #define SCREEN_URL "http://192.168.1.212:8088/v1/screen"
+
+// ============================================================================
+// OPTIONAL: DEBUG LOGGING
+// ============================================================================
+// Serial output at 115200 baud. Costs ~200 ms per wake; off in production.
+// #define DEBUG_LOG 1
+
+// ============================================================================
+// OPTIONAL: OTA
+// ============================================================================
+// The manifest URL has a default in D_OTA.ino; override only for a fork.
 // #define OTA_MANIFEST_URL "https://raw.githubusercontent.com/<you>/<repo>/firmware-latest/version.txt"
 //
-// Phase 2 development knob: force the OTA check on every wake (bypasses
-// the once-per-day gate AND the "hour >= NIGHT_END" gate). Turn OFF for
-// production — every-wake checks add ~0.03 mAh per wake and accumulate.
+// Development only: check the manifest on every wake instead of when a
+// trigger says so. Each check is an HTTPS request; never in production.
 // #define OTA_TEST_FORCE_CHECK 1
 //
-// Show firmware version in the footer next to "Updated HH:MM". Useful
-// during initial OTA shakedown; flip OFF once trusted to clean up the UI.
-// #define SHOW_VERSION_FOOTER 1
-
-// ============================================================================
-// OPTIONAL: REFRESH STRATEGY
-// ============================================================================
-// Number of wakes between full e-ink refreshes. In between, partial updates
-// are used (much lower energy + faster). Full refreshes clear ghosting.
-// Default 4 = once per hour at SLEEP_DURATION=900.
-// #define FULL_REFRESH_EVERY 4
-
-// ============================================================================
-// OPTIONAL: NETWORK CACHING (battery-savers)
-// ============================================================================
-// Both have sensible #ifndef defaults in code; override only to tune.
-
-// Open-Meteo 7-day daily forecast cache TTL. The hourly sparkline still
-// refreshes every wake; only the week strip + sunrise/sunset lag this much.
-// Calendar-day rollover forces an unconditional refresh so "Today" is today.
-// Default 360 min (6 h) → ~4 refreshes/day. Lower = fresher but more battery.
-// #define OM_DAILY_TTL_MIN 360
-
-// Adaptive wake cadence. SLEEP_DURATION above is the *peak* interval; the
-// device falls back to OFFPEAK_SLEEP_DURATION outside the weekday commute
-// windows below. Weekends stay at SLEEP_DURATION all day regardless.
-// Fewer wakes is the largest remaining battery lever (WiFi-active time is
-// ~92% of the daily budget) — see docs/power-audit.md §9 #9.
-// To disable: set OFFPEAK_SLEEP_DURATION equal to SLEEP_DURATION.
-// #define OFFPEAK_SLEEP_DURATION (30UL * 60)
-// #define PEAK_AM_START_MIN (6 * 60 + 30)   // 06:30
-// #define PEAK_AM_END_MIN   (9 * 60 + 30)   // 09:30
-// #define PEAK_PM_START_MIN (16 * 60)       // 16:00
-// #define PEAK_PM_END_MIN   (19 * 60 + 30)  // 19:30
-
-// NS Trip Planner HS-leg (GV → TBU) cache TTL. The picker only consults
-// HS when Centraal is disrupted, so HS data can usually be served from
-// cache. Any CTR disruption forces a fresh HS fetch regardless of TTL.
-// Default 45 min → covers ~2 wakes at SLEEP_DURATION=900.
-// #define HS_CACHE_TTL_MIN 45
+// Bench flashes only: never check for updates. A local build is "dev",
+// which counts as older than any release, so without this it replaces
+// itself with the newest release on its first wake (CLAUDE.md, "OTA
+// gotchas"). NEVER in the CONFIG_H secret: a device that never updates
+// can only be fixed with a USB cable. CI refuses to build if it is there.
+// #define OTA_SKIP 1
+//
+// Bench flashes only: cap every sleep, so the failure path and the second
+// wake can be tested in minutes. NEVER in CONFIG_H either: CI refuses it.
+// #define BENCH_MAX_SLEEP_S 60
 
 #endif

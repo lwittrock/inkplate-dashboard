@@ -67,12 +67,33 @@ def test_substitute_must_be_reachable_on_foot():
     assert pick_departures(ctr, [dep("08:05", "09:15", "HS")], NOW)[0].origin == "HS"    # now + 5
 
 
-def test_substitute_must_arrive_before_every_filled_slot():
+def test_substitute_must_not_arrive_with_a_filled_slot():
     # Slot 1 arrives 09:20. The HS option for the cancelled slot 2 catches the
     # same connection, so it adds nothing and the disruption is shown instead.
     ctr = [dep("08:10", "09:20"), dep("08:40", "09:50", cancelled=True)]
     hs = [dep("08:36", "09:20", "HS")]
     assert times(pick_departures(ctr, hs, NOW)) == [("CTR", "08:10"), ("CTR", "08:40")]
+
+
+def test_substitute_arriving_after_earlier_slots_is_used():
+    # The rule used to demand an arrival before every filled slot, so slots 2
+    # and 3 could never get a backup: the HS train here was thrown away.
+    ctr = [dep("08:20", "09:30"), dep("08:50", "10:00", cancelled=True), dep("09:20", "10:30")]
+    hs = [dep("08:55", "10:05", "HS")]
+    assert times(pick_departures(ctr, hs, NOW)) == [("CTR", "08:20"), ("HS", "08:55"), ("CTR", "09:20")]
+
+
+def test_substitute_reaching_a_later_centraal_trains_sprinter_is_rejected():
+    # The next Centraal train makes the same connection: leave from Centraal.
+    ctr = [dep("08:20", "09:30", cancelled=True), dep("08:35", "09:40")]
+    hs = [dep("08:25", "09:40", "HS")]
+    assert times(pick_departures(ctr, hs, NOW)) == [("CTR", "08:20"), ("CTR", "08:35")]
+
+
+def test_a_cancelled_slots_arrival_does_not_block_a_substitute():
+    ctr = [dep("08:20", "09:30", cancelled=True), dep("08:50", "10:00", cancelled=True)]
+    hs = [dep("08:52", "09:30", "HS")]
+    assert times(pick_departures(ctr, hs, NOW)) == [("CTR", "08:20"), ("HS", "08:52")]
 
 
 def test_duplicate_routings_of_one_train_fill_one_slot():
@@ -93,11 +114,11 @@ def test_no_centraal_trips_promotes_clean_hs():
         dep("08:12", "09:20", "HS", cancelled=True),
         dep("08:14", "09:20", "HS"),
         dep("08:14", "09:21", "HS"),             # same train again
-        dep("08:30", "09:20", "HS"),             # arrives no earlier than slot 1
+        dep("08:30", "09:20", "HS"),             # arrives with slot 1
         dep("08:44", "09:10", "HS"),
         dep("09:14", "10:05", "HS"),
     ]
-    assert times(pick_departures([], hs, NOW)) == [("HS", "08:14"), ("HS", "08:44")]
+    assert times(pick_departures([], hs, NOW)) == [("HS", "08:14"), ("HS", "08:44"), ("HS", "09:14")]
 
 
 def test_evening_trains_arriving_after_midnight():

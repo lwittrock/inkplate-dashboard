@@ -115,7 +115,7 @@ def material_name(cat: Category, night: bool) -> str:
 # around the cloud's silhouette plus a gap. Fractions of the icon's box.
 SHOWERS_CLOUD = (0.86, 0.38, 0.64)      # size, centre x, centre y
 SHOWERS_SUN = (0.64, 0.66, 0.30)
-SHOWERS_GAP = 0.06
+SHOWERS_GAP = 0.13
 
 
 def _knock_out(sun: Image.Image, keepout: Image.Image) -> Image.Image:
@@ -161,8 +161,10 @@ def _showers_mask(px: int, em: int, weight: int, mono: bool) -> Image.Image:
     solid = cloud.point(lambda v: 255 if v >= 128 else 0)
     ImageDraw.floodfill(solid, (size_px - 1, size_px - 1), 128)
     silhouette = solid.point(lambda v: 0 if v == 128 else 255)
-    gap = max(1.0, SHOWERS_GAP * px)
-    keepout = silhouette.filter(ImageFilter.GaussianBlur(gap)).point(lambda v: 255 if v > 4 else 0)
+    # Grown by the gap: blurred with half the gap as the standard deviation,
+    # then cut at 2 deviations out (a round dilation, where Pillow's filters are square).
+    keepout = silhouette.filter(ImageFilter.GaussianBlur(max(0.5, SHOWERS_GAP * px / 2)))
+    keepout = keepout.point(lambda v: 255 if v > 6 else 0)
     return ImageChops.lighter(cloud, _knock_out(sun, keepout))
 
 
@@ -244,7 +246,7 @@ class Canvas:
         em, weight = round(box * 1.12 * self.s), 300 if box > 64 else 400
         if cat == Category.SHOWERS and not night:
             mask = _showers_mask(box * self.s, em, weight, self.mono)
-            pad = box * self.s // 4
+            pad = (mask.width - box * self.s) // 2
             self.img.paste(self.p.text, (x * self.s - pad, y * self.s - pad), mask)
             return
         self.d.text(((x + box / 2) * self.s, (y + box / 2) * self.s),

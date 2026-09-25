@@ -65,7 +65,7 @@ Material Symbols has no sun-with-rain glyph. It is drawn from two we have
 (`render._showers_mask`): `rainy` at 86% size, bottom left, and `sunny` at 64%
 top right, 200 weight units heavier than the cloud so its strokes match (600 in
 the week row, 500 in NOW), knocked out around the cloud's silhouette plus a gap
-of 6% of the box. A ray the gap would cut is dropped whole, since a sliver of one
+of 13% of the box. A ray the gap would cut is dropped whole, since a sliver of one
 reads as a speck; only the disc is cut into an arc. Reads at 48 and 128 px, in
 greyscale and 1-bit.
 

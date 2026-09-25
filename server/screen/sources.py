@@ -193,10 +193,10 @@ def parse_br_stations(doc: dict) -> list[Station]:
         code = icon_code_from_url(s.get("iconurl"))
         if not code or s.get("temperature") is None:
             continue
-        description = text(s.get("weatherdescription"))
         if not known_icon(code) and code not in _unknown_icons:
             _unknown_icons.add(code)
-            log.warning("Buienradar icon %r is new (shown as overcast): %s", code, description)
+            log.warning("Buienradar icon %r is new (shown as overcast): %s",
+                        code, text(s.get("weatherdescription")))
         bearing = s.get("winddirectiondegrees")
         if not isinstance(bearing, (int, float)) or bearing < 0:
             bearing = _DUTCH_CARDINALS.get(text(s.get("winddirection")), 0)
@@ -211,7 +211,6 @@ def parse_br_stations(doc: dict) -> list[Station]:
             bearing=int(bearing),
             feels=num(s.get("feeltemperature"), None),
             gust_ms=num(s.get("windgusts"), None),
-            description=description,
         ))
     return out
 

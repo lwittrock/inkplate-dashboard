@@ -101,7 +101,6 @@ class Station:
     bearing: int                # degrees the wind comes from
     feels: float | None = None
     gust_ms: float | None = None
-    description: str = ""       # the feed's weatherdescription, for logging unknown codes
 
 
 @dataclass

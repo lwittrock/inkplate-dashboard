@@ -108,6 +108,55 @@ class Station:
 
 
 @dataclass
+class StationReading:
+    """One nearby station as NOW's choice saw it."""
+    name: str
+    km: float
+    code: str
+    sun_wm2: float | None
+    share: float | None         # sun_wm2 as a share of a clear sky's; None without either
+    voting: bool                # within the consensus radius
+
+
+@dataclass
+class NowChoice:
+    """Why NOW shows what it shows: logged, kept in now.jsonl, shown in /status."""
+    shown: Category
+    vote: Category
+    sun_elevation: float
+    clear_wm2: float
+    median_share: float | None  # the voters'
+    sun_through: bool           # the sunshine rule held, whatever the vote
+    hour: HourForecast | None
+    stations: list[StationReading]
+
+    def __str__(self) -> str:
+        why = "sun through" if self.shown != self.vote else "vote"
+        share = "no sunshine data" if self.median_share is None else f"stations {self.median_share:.0%}"
+        model = "no model hour" if self.hour is None else f"model {self.hour.sun_s / 60:.0f} min sun"
+        return (f"{self.shown.name.lower()} ({why}; vote {self.vote.name.lower()}; {share}, {model}, "
+                f"sun {self.sun_elevation:.1f} deg up)")
+
+    def record(self, at: datetime) -> dict:
+        h = self.hour
+        return {
+            "t": at.isoformat(timespec="seconds"),
+            "shown": self.shown.name.lower(),
+            "vote": self.vote.name.lower(),
+            "sun_through": self.sun_through,
+            "sun_elevation": round(self.sun_elevation, 1),
+            "clear_wm2": round(self.clear_wm2),
+            "median_share": None if self.median_share is None else round(self.median_share, 3),
+            "model": None if h is None else {
+                "sun_min": round(h.sun_s / 60), "cloud": h.cloud_pct, "low": h.cloud_low_pct,
+                "mid": h.cloud_mid_pct, "high": h.cloud_high_pct},
+            "stations": [{"name": s.name, "km": round(s.km, 1), "code": s.code, "sun_wm2": s.sun_wm2,
+                          "share": None if s.share is None else round(s.share, 3), "voting": s.voting}
+                         for s in self.stations],
+        }
+
+
+@dataclass
 class WeatherNow:
     temp: float
     wind_kmh: float
@@ -115,6 +164,7 @@ class WeatherNow:
     wind_bearing: int
     feels: float | None = None
     gust_kmh: float | None = None
+    choice: NowChoice | None = None
 
 
 class RainSample(NamedTuple):

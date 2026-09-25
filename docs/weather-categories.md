@@ -103,19 +103,21 @@ It never darkens a clear vote, and rain, snow, fog and thunder stay the
 stations' call. The three numbers come from one morning: near the coast, at
 11 degrees, a mostly blue sky measured 42-49% of the model's clear sky.
 
-**What is logged**, one line per render (every 5 minutes) with everything
-needed to re-judge it:
+**What is kept.** Every render (every 5 minutes, not at night) appends one
+JSON record to `now.jsonl` in the service's state directory, kept for 14 days
+(`screen/nowlog.py`): the choice, the vote, the sun's height and a clear sky's
+W/m², the voters' median share, the model's hour (sunshine, cloud and its
+low, mid and high layers), and each of the six nearest stations with its
+distance, code, W/m², share and whether it voted. The file survives restarts
+and reboots. From the laptop:
 
-    now: partly_cloudy (vote overcast; sun 15.5 deg up, clear sky 236 W;
-    model 60 min sun, cloud 5% (low 0, mid 0, high 5); voting: Voorschoten
-    9 km b 104 W 44%, Rotterdam 17 km c 78 W 33%, Hoek van Holland 18 km c
-    123 W 52%; beyond 30 km: Schiphol 40 km b 113 W 48%, ...)
+    curl "http://192.168.1.212:8088/now-log?days=7" > now.jsonl
 
-On CT 106: `journalctl -u inkplate-screen --since 2026-09-25 | grep "now:"`.
-The journal must survive reboots for this (`journalctl --list-boots` lists more
-than one boot).
+The journal gets one short line per render, and `/status` shows the latest:
 
-**Re-evaluate around 2 October 2026**: compare the week's lines with KNMI's
+    now: partly_cloudy (sun through; vote overcast; stations 80%, model 60 min sun, sun 22.1 deg up)
+
+**Re-evaluate around 2 October 2026**: compare the week's records with KNMI's
 measured hours for Voorschoten (215), Rotterdam (344) and Hoek van Holland
 (330) at `daggegevens.knmi.nl/klimatologie/uurgegevens` (SQ sunshine, N
 cloud), plus any moments the wall looked wrong. Questions: where does

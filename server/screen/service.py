@@ -10,7 +10,9 @@ Endpoints:
         at night (keep the panel, just sleep).
         Headers: X-Sleep (seconds), X-Format, X-Refresh (full|partial), X-Ota (1 = check now).
     GET /preview.png   the current frame, for a browser on the laptop
-    GET /status        last render and last device report, as JSON
+    GET /status        last render, last device report with its battery %, and
+                       why NOW shows what it shows, as JSON (Homepage reads it)
+    GET /now-log?days=7   NOW's choices of the last days, one JSON line per render
 
 The contract is described in docs/server-rendering-design.md. Change it only
 backward-compatibly: the service deploys in minutes, the device after midnight.
@@ -33,8 +35,10 @@ from zoneinfo import ZoneInfo
 from . import frames, render, schedule
 from .collect import Collector
 from .config import SERVER_DIR, Settings, load_env_file
+from .model import NowChoice
+from .nowlog import KEEP, NowLog
 from .sources import FixtureFetcher, LiveFetcher
-from .telemetry import Forwarder, Report, State
+from .telemetry import Forwarder, Report, State, battery_percent
 
 log = logging.getLogger("screen")
 TZ = ZoneInfo("Europe/Amsterdam")
@@ -46,7 +50,8 @@ def wall_clock() -> datetime:
 
 class Service:
     def __init__(self, settings: Settings, fetcher, forwarder: Forwarder, state_path: Path,
-                 clock: Callable[[], datetime] = wall_clock, hc_render_url: str = "") -> None:
+                 clock: Callable[[], datetime] = wall_clock, hc_render_url: str = "",
+                 now_log: NowLog | None = None) -> None:
         self.settings = settings
         self.collector = Collector(settings, fetcher)
         self.forwarder = forwarder
@@ -58,12 +63,17 @@ class Service:
         self.bodies: dict[str | None, bytes] = {}   # by format; None = raw 1-bit
         self.png: bytes = b""
         self.rendered_at: datetime | None = None
+        self.now_log = now_log
+        self.now_choice: NowChoice | None = None
 
     # --- rendering ------------------------------------------------------------
 
     def render_now(self) -> None:
         now = self.clock()
         snap = self.collector.snapshot(now)
+        choice = snap.weather.choice if snap.weather else None
+        if choice and self.now_log:
+            self.now_log.append(choice.record(now), now)
         with self.lock:
             snap.battery_v = self.state.battery_v
             if self.settings.show_version_footer:
@@ -78,6 +88,7 @@ class Service:
         (grey if self.settings.screen_format == "grey" else mono.convert("L")).save(buf, format="PNG")
         with self.lock:
             self.bodies, self.png, self.rendered_at = bodies, buf.getvalue(), now
+            self.now_choice = choice
         log.info("rendered %s: %d departures, weather %s", f"{now:%H:%M}", len(snap.departures),
                  "ok" if snap.weather else "missing")
 
@@ -138,12 +149,23 @@ class Service:
 
     def status(self) -> dict:
         with self.lock:
+            c = self.now_choice
             return {
                 "rendered_at": self.rendered_at.isoformat() if self.rendered_at else None,
                 "last_seen": self.state.last_seen,
                 "last_report": self.state.last,
+                "battery_pct": battery_percent(self.state.battery_v),
                 "ota_sent_for": self.state.ota_sent_for,
+                "now": None if c is None else {
+                    "shown": c.shown.name.lower().replace("_", " "),
+                    "vote": c.vote.name.lower().replace("_", " "),
+                    "why": str(c)},
             }
+
+    def now_log_since(self, days: int) -> bytes:
+        if not self.now_log:
+            return b""
+        return self.now_log.since(self.clock() - timedelta(days=days))
 
 
 def make_handler(service: Service):
@@ -162,6 +184,12 @@ def make_handler(service: Service):
                 self._reply(200, "image/png", png)
             elif url.path == "/status":
                 self._reply(200, "application/json", json.dumps(service.status(), indent=1).encode())
+            elif url.path == "/now-log":
+                try:
+                    days = min(max(int(parse_qs(url.query).get("days", ["7"])[0]), 1), KEEP.days)
+                except ValueError:
+                    days = 7
+                self._reply(200, "application/x-ndjson", service.now_log_since(days))
             else:
                 self._reply(404, "text/plain", b"not found\n")
 
@@ -206,7 +234,7 @@ def main() -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     forwarder = Forwarder(ha_webhook_url=env("HA_WEBHOOK_URL", ""), hc_device_url=env("HC_PING_INKPLATE", ""))
     service = Service(settings, fetcher, forwarder, state_dir / "state.json", clock=clock,
-                      hc_render_url=env("HC_PING_RENDER", ""))
+                      hc_render_url=env("HC_PING_RENDER", ""), now_log=NowLog(state_dir / "now.jsonl"))
 
     service.render_now()   # never serve "no frame yet"
     threading.Thread(target=service.render_loop, name="render", daemon=True).start()

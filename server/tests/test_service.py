@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from screen.config import Settings
+from screen.nowlog import NowLog
 from screen.service import Service, make_handler
 from screen.sources import FixtureFetcher
 from screen.telemetry import Forwarder, Report, State, battery_percent
@@ -37,7 +38,7 @@ def svc(tmp_path):
                           send=lambda url, body: sent.append((url, body)))
     clock = Clock(datetime(2026, 9, 23, 21, 39, 30))
     service = Service(Settings.from_env(), FixtureFetcher(FIXTURE), forwarder,
-                      tmp_path / "state.json", clock=clock)
+                      tmp_path / "state.json", clock=clock, now_log=NowLog(tmp_path / "now.jsonl"))
     service.render_now()
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(service))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -105,8 +106,23 @@ def test_preview_status_and_unknown_paths(svc):
     assert status == 200 and body.startswith(b"\x89PNG")
     get("/v1/screen?batt=3.8")
     status, _, body = get("/status")
-    assert json.loads(body)["last_report"] == {"batt": 3.8}
+    st = json.loads(body)
+    assert (st["last_report"], st["battery_pct"]) == ({"batt": 3.8}, 40)
+    assert st["now"]["shown"] == st["now"]["vote"] == "overcast"     # 21:39: no sun to overrule it
+    assert st["now"]["why"].startswith("overcast (vote; vote overcast; ")
     assert get("/nope")[0] == 404
+
+
+def test_now_log_serves_each_renders_choice(svc):
+    service, clock, get, _, _ = svc
+    clock.t = datetime(2026, 9, 23, 21, 44, 30)
+    service.render_now()
+    status, headers, body = get("/now-log?days=1")
+    records = [json.loads(line) for line in body.decode().splitlines()]
+    assert (status, headers["Content-Type"]) == (200, "application/x-ndjson")
+    assert [r["t"] for r in records] == ["2026-09-23T21:39:30", "2026-09-23T21:44:30"]
+    assert records[0]["stations"][0]["voting"] is True
+    assert get("/now-log?days=nonsense")[0] == 200
 
 
 def test_battery_percent_follows_the_lipo_curve():

@@ -22,6 +22,7 @@ the thin firmware, was released the same evening (`v2026.09.24-01`).
 | `screen/service.py` | The HTTP service: render loop, `/v1/screen`, `/preview.png`, `/status` |
 | `screen/schedule.py` | When the device wakes next, OTA hint, 200 or 204, full or partial refresh |
 | `screen/telemetry.py` | The device's report: parsing, `state.json`, forwarding to HA and healthchecks.io |
+| `screen/nowlog.py` | NOW's choices with their numbers, `now.jsonl`, served at `/now-log` |
 | `screen/assets/ttf/` | Inter (OFL, variable) and the Material Symbols weather subset (Apache 2.0), with their licences |
 | `tools/subset_icons.py` | Rebuilds the icon subset from Google's font, byte for byte |
 | `tools/mockups.py` | The screen in its three looks side by side, from a fixture and a synthetic rainy morning |

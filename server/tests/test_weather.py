@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime, timedelta
 
@@ -212,14 +213,29 @@ def test_sunshine_never_darkens_the_vote():
     assert sky_now(clear, model_hour(0)) == Category.CLEAR
 
 
-def test_every_choice_is_logged_with_its_numbers(caplog):
+def test_every_choice_carries_and_logs_its_numbers(caplog):
+    stations = overcast_vote(0.45, 0.30, 0.60) + [station("Schiphol", 52.30, 4.77, "a")]
     with caplog.at_level(logging.INFO, logger="screen.weather"):
-        sky_now(overcast_vote(0.45, 0.30, 0.60) + [station("Schiphol", 52.30, 4.77, "a")], model_hour(60))
-    line = caplog.messages[-1]
-    assert line.startswith("now: partly_cloudy (vote overcast; sun ")
-    assert "model 60 min sun, cloud 91% (low 0, mid 0, high 91)" in line
-    assert "voting: Voorschoten 9 km b " in line and " 45%, Rotterdam 17 km c " in line
-    assert line.endswith("beyond 30 km: Schiphol 40 km a)")
+        w = pick_current(stations, NOW, *HOME, stale_min=60, consensus_km=30, max_candidates=6,
+                         hour=model_hour(60))
+    assert caplog.messages[-1].startswith(
+        "now: partly_cloudy (sun through; vote overcast; stations 45%, model 60 min sun, sun ")
+
+    r = w.choice.record(NOW)
+    assert (r["t"], r["shown"], r["vote"], r["sun_through"], r["median_share"]) == \
+        ("2026-09-23T14:00:00", "partly_cloudy", "overcast", True, 0.45)
+    assert r["model"] == {"sun_min": 60, "cloud": 91.0, "low": 0.0, "mid": 0.0, "high": 91.0}
+    assert [(s["name"], round(s["km"]), s["code"], s["share"], s["voting"]) for s in r["stations"]] == [
+        ("Voorschoten", 9, "b", 0.45, True), ("Rotterdam", 17, "c", 0.3, True),
+        ("Hoek van Holland", 17, "c", 0.6, True), ("Schiphol", 40, "a", None, False)]
+    assert json.loads(json.dumps(r)) == r
+
+
+def test_the_rule_is_recorded_even_when_the_vote_is_not_overcast():
+    w = pick_current(overcast_vote(0.6, 0.6, 0.6)[:1], NOW, *HOME, stale_min=60, consensus_km=30,
+                     max_candidates=6, hour=model_hour(60))
+    assert (w.category, w.choice.sun_through) == (Category.PARTLY_CLOUDY, True)
+    assert str(w.choice).startswith("partly_cloudy (vote; vote partly_cloudy;")
 
 
 def forecast(cat=Category.CLEAR, tmax=20, feels=20, wind=10.0, gust=20.0, uv=4.0):

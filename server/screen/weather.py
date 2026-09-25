@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import median
 from zoneinfo import ZoneInfo
 
-from .model import Category, HourForecast, Station, WeatherNow
+from .model import Category, HourForecast, NowChoice, Station, StationReading, WeatherNow
 
 log = logging.getLogger(__name__)
 
@@ -183,8 +183,8 @@ def pick_current(stations: list[Station], now: datetime, lat: float, lon: float,
     and read temperature and wind from the closest station that voted for
     the winner. One station with a faulty sensor can't set the icon alone.
     An overcast vote becomes partly cloudy when the sun gets through (see
-    above); `hour` is the forecast hour now falls in. Every choice is logged
-    with the numbers behind it.
+    above); `hour` is the forecast hour now falls in. The numbers behind the
+    choice come back as WeatherNow.choice, and are logged.
     """
     fresh = [s for s in stations
              if s.observed is None or (now - s.observed).total_seconds() <= stale_min * 60]
@@ -213,28 +213,18 @@ def pick_current(stations: list[Station], now: datetime, lat: float, lon: float,
 
     voters = [s for _, s in in_range] or [src]
     shares = [share(s) for s in voters if share(s) is not None]
+    mid = median(shares) if shares else None
     sun_through = (elevation >= MIN_SUN_ELEVATION and hour is not None and hour.sun_s >= MODEL_SUN_S
-                   and bool(shares) and median(shares) >= SUN_THROUGH)
+                   and mid is not None and mid >= SUN_THROUGH)
     shown = Category.PARTLY_CLOUDY if cat == Category.OVERCAST and sun_through else cat
-    _log_now(shown, cat, elevation, clear, hour, by_distance[:max_candidates], consensus_km, share)
+    choice = NowChoice(
+        shown=shown, vote=cat, sun_elevation=elevation, clear_wm2=clear, median_share=mid,
+        sun_through=sun_through, hour=hour,
+        stations=[StationReading(name=s.name.removeprefix("Meetstation "), km=d, code=s.icon_code,
+                                 sun_wm2=s.sun_wm2, share=share(s), voting=any(s is v for v in voters))
+                  for d, s in by_distance[:max_candidates]])
+    log.info("now: %s", choice)
 
     return WeatherNow(temp=src.temp, wind_kmh=src.wind_ms * 3.6, category=shown, wind_bearing=src.bearing,
-                      feels=src.feels, gust_kmh=src.gust_ms * 3.6 if src.gust_ms is not None else None)
-
-
-def _log_now(shown, vote, elevation, clear, hour, nearest, consensus_km, share) -> None:
-    """One line per choice, with everything needed to re-judge it later
-    against KNMI's measured hours."""
-    def station(d: float, s: Station) -> str:
-        sun = "" if s.sun_wm2 is None else f" {s.sun_wm2:.0f} W"
-        if share(s) is not None:
-            sun += f" {share(s):.0%}"
-        return f"{s.name.removeprefix('Meetstation ')} {d:.0f} km {s.icon_code}{sun}"
-
-    model = ("no model hour" if hour is None else
-             f"model {hour.sun_s / 60:.0f} min sun, cloud {hour.cloud_pct:.0f}% (low "
-             f"{hour.cloud_low_pct:.0f}, mid {hour.cloud_mid_pct:.0f}, high {hour.cloud_high_pct:.0f})")
-    near = ", ".join(station(d, s) for d, s in nearest if d <= consensus_km) or "none"
-    far = ", ".join(station(d, s) for d, s in nearest if d > consensus_km) or "none"
-    log.info("now: %s (vote %s; sun %.1f deg up, clear sky %.0f W; %s; voting: %s; beyond %g km: %s)",
-             shown.name.lower(), vote.name.lower(), elevation, clear, model, near, consensus_km, far)
+                      feels=src.feels, gust_kmh=src.gust_ms * 3.6 if src.gust_ms is not None else None,
+                      choice=choice)

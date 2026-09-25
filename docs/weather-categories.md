@@ -1,8 +1,7 @@
 # Weather categories
 
-Status, 25 September 2026: built on branch `weather-categories` (rules in
-`server/screen/weather.py`, the request and parser in `sources.py`, the icon in
-`render.py`). The greeting's wording is still left for later; the new category
+Status: live since 25 September 2026 (rules in `server/screen/weather.py`, the
+request and parser in `sources.py`, the icon in `render.py`). The greeting's wording is still left for later; the new category
 only got a placeholder, "Showery". Everything here is server-only (`server/screen/`).
 
 ## Why

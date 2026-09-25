@@ -47,7 +47,7 @@ No NTP, no clock, no night mode, no cadence rules on the device: the server's sc
 
 **Failure path** (`failedWake`): the first failure changes nothing on the panel (e-ink keeps its picture) and retries in 10 minutes; from the second, the panel says "No Wi-Fi" or "Server down" (drawn once, full refresh); retries back off to 30, then 60 minutes. The server answers a device reporting `fail > 0` with a full redraw, even at night.
 
-**Server** (`server/`, see [server/README.md](server/README.md)): `screen/sources.py` (the APIs), `collect.py` (per-source caching), `trains.py`, `weather.py`, `headline.py`, `render.py` (the design, for the greyscale and 1-bit panel modes) + `frames.py` (the wire formats), `schedule.py` (wake cadence), `telemetry.py`, `service.py` (HTTP on 8088). Deploys itself from `master` when `server/` changes, after a self-test.
+**Server** (`server/`, see [server/README.md](server/README.md)): `screen/sources.py` (the APIs), `collect.py` (per-source caching), `trains.py`, `weather.py`, `headline.py`, `render.py` (the design, for the greyscale and 1-bit panel modes) + `frames.py` (the wire formats), `schedule.py` (wake cadence), `telemetry.py`, `nowlog.py` (NOW's choices, for evaluation), `service.py` (HTTP on 8088). Deploys itself from `master` when `server/` changes, after a self-test.
 
 ---
 
@@ -138,9 +138,10 @@ These were discovered during integration spikes and are not derivable from the c
 
 **Buienradar feed schema:**
 - The weather icon is exposed as an *image URL* (`.../weather/30x30/aa.png`) — there is no `iconcode` field. Filename stem = code.
-- Icon codes are doubled letters for the day variant (`aa`, `bb`) and single for the night variant (`a`, `b`); doubled letters collapse to single before lookup. `cc` is the only multi-char code that stays distinct.
+- Icon codes were doubled letters for the day variant (`aa`, `bb`) and single for the night variant (`a`, `b`), but on 25 September 2026 the feed sent single letters in daylight too. Doubled letters collapse to single before lookup, so either works; `cc` is the only multi-char code that stays distinct. NOW's night icon comes from sunrise and sunset, not from the code.
 - `winddirectiondegrees` is an integer (0–360); `winddirection` (Dutch cardinal string) is only the fallback.
-- `feeltemperature` is lowercase. Not used.
+- `feeltemperature` is lowercase; it is NOW's "Feels like".
+- `sunpower` is measured sunshine in W/m² (absent at some stations); NOW's sunshine rule compares it with a clear sky's.
 
 **Open-Meteo:** a response is labelled with the UTC offset in effect *when asked* (`utc_offset_seconds`), even for hours after a DST switch, so those labels are an hour off. The server subtracts that offset and converts with `zoneinfo` (`sources.om_time`). The week row's icons come from the hourly values, judged on 07:00–21:00: [docs/weather-categories.md](docs/weather-categories.md). `precipitation_hours` arrives as a JSON float (`12.0`). The firmware read it with ArduinoJson's `| 0`, which returns the default for anything not stored as an integer, so its "≥ 3 hours of precipitation means drizzle" rule never fired. The server no longer uses it. (Also found on 23 September 2026: the firmware's "Wet and windy" headline could never appear, because "Windy" always claimed the slot first.)
 

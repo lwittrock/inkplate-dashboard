@@ -8,26 +8,45 @@ shows a disruption.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
 from . import sources, trains
 from .config import Settings
-from .model import Snapshot
+from .model import DayForecast, Forecast, Snapshot
 from .weather import pick_current
 
 log = logging.getLogger(__name__)
 
 # key: (refresh after, give up on the cached copy after)
 POLICY = {
-    "om_hourly": (timedelta(minutes=15), timedelta(hours=3)),
-    "om_daily": (timedelta(hours=6), timedelta(hours=24)),
+    "om": (timedelta(hours=1), timedelta(hours=12)),        # KNMI's model runs hourly
     "br_feed": (timedelta(minutes=10), timedelta(hours=3)),
     "br_rain": (timedelta(minutes=5), timedelta(minutes=30)),
     "ns_ctr": (timedelta(minutes=5), timedelta(0)),       # never served from cache
     "ns_hs": (timedelta(minutes=45), timedelta(minutes=45)),
 }
+
+
+def hours_ahead(om: Forecast, now: datetime) -> list[float]:
+    """Temperatures for 24 hours from the top of this hour. Empty when the
+    list lacks this hour: render.temp_chart takes the first value as it."""
+    top = now.replace(minute=0, second=0, microsecond=0)
+    start = next((i for i, h in enumerate(om.hours) if h.time >= top), None)
+    if start is None or om.hours[start].time != top:
+        return []
+    return [h.temp for h in om.hours[start:start + 24]]
+
+
+def week_ahead(om: Forecast, now: datetime) -> list[DayForecast]:
+    """Up to seven days from today. Empty when today is missing, so the
+    first column is always today."""
+    today = now.date()
+    if today not in om.days:
+        return []
+    days = [d for day, d in om.days.items() if day >= today][:7]
+    return [replace(days[0], day_name="Today")] + days[1:]
 
 
 @dataclass
@@ -42,13 +61,11 @@ class Collector:
     fetcher: Any
     cache: dict[str, _Entry] = field(default_factory=dict)
 
-    def _get(self, key: str, now: datetime, *, force: bool = False, fresh_when=None):
-        """Parsed value for `key`, or None. `fresh_when(entry)` can declare a
-        cached entry unusable (e.g. the hourly list from a previous hour)."""
+    def _get(self, key: str, now: datetime, *, force: bool = False):
+        """Parsed value for `key`, or None."""
         refresh, max_age = POLICY[key]
         entry = self.cache.get(key)
-        usable = entry is not None and (fresh_when is None or fresh_when(entry))
-        if usable and not force and now - entry.fetched_at < refresh:
+        if entry is not None and not force and now - entry.fetched_at < refresh:
             return entry.value
         try:
             value = sources.parse(key, self.fetcher.get(key))
@@ -59,7 +76,7 @@ class Collector:
             return value
         except Exception as exc:
             log.warning("%s: fetch failed: %s", key, exc)
-            if usable and now - entry.fetched_at < max_age:
+            if entry is not None and now - entry.fetched_at < max_age:
                 return entry.value
             return None
 
@@ -67,14 +84,9 @@ class Collector:
         s = self.settings
         snap = Snapshot(now=now)
 
-        # The hourly list starts at the hour it was fetched in.
-        same_hour = lambda e: e.fetched_at.replace(minute=0, second=0, microsecond=0) == \
-            now.replace(minute=0, second=0, microsecond=0)
-        snap.hourly = self._get("om_hourly", now, fresh_when=same_hour) or []
-
-        # "Today" must be today.
-        same_day = lambda e: e.fetched_at.date() == now.date()
-        snap.forecast = self._get("om_daily", now, fresh_when=same_day) or []
+        om = self._get("om", now)
+        if om:
+            snap.hourly, snap.forecast = hours_ahead(om, now), week_ahead(om, now)
 
         stations = self._get("br_feed", now)
         if stations:

@@ -36,6 +36,7 @@ def base_adjective(cat: Category, temp_max: int, uv_max: float) -> str:
         Category.DRIZZLE: "Drizzly",
         Category.RAIN: "Wet",
         Category.RAIN_HEAVY: "Soaking",
+        Category.SHOWERS: "Showery",
         Category.FOG: "Foggy",
         Category.SNOW: "Snowy",
         Category.THUNDERSTORM: "Stormy",

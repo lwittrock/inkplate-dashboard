@@ -1,14 +1,17 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
-from screen.collect import Collector
+import pytest
+
+from screen.collect import Collector, hours_ahead, week_ahead
 from screen.config import Settings
 from screen.model import Category, Transfer
 from screen.sources import (FixtureFetcher, icon_code_from_url, local_time, parse_br_rain,
-                            parse_br_stations, parse_om_daily, parse_trips)
+                            parse_br_stations, parse_om, parse_trips)
 
 FIXTURES = Path(__file__).parent / "fixtures"
+DATA = Path(__file__).parent / "data"
 
 
 def leg(planned, actual=None, arr_planned=None, arr_actual=None, cancelled=False, track="5"):
@@ -70,26 +73,78 @@ def test_parse_stations():
     assert icon_code_from_url(url.format("abcd")) == ""
 
 
-def test_parse_daily():
-    doc = {"daily": {
-        "time": ["2026-09-23", "2026-09-24"],
-        "temperature_2m_max": [18.7, -0.6], "temperature_2m_min": [11.2, -3.5],
-        "weather_code": [3, 3],
-        "sunshine_duration": [3600.0, 3600.0], "daylight_duration": [43200.0, 43200.0],
-        "precipitation_sum": [0.4, 0.0], "precipitation_hours": [12.0, 0.0],
-        "snowfall_sum": [0.0, 0.0],
-        "sunrise": ["2026-09-23T07:31", "2026-09-24T07:33"],
-        "sunset": ["2026-09-23T19:39", "2026-09-24T19:37"],
-        "wind_speed_10m_max": [24.9, 30.0], "wind_gusts_10m_max": [41.0, 50.0],
-        "apparent_temperature_max": [17.5, -2.4], "uv_index_max": [3.45, 1.0],
-    }}
-    today, thu = parse_om_daily(doc)
-    assert (today.day_name, thu.day_name) == ("Today", "Thu")
-    assert (today.temp_max, today.temp_min, thu.temp_max, thu.temp_min) == (19, 11, -1, -4)
-    assert today.category == Category.DRIZZLE        # 12 hours of light precipitation
-    assert thu.category == Category.OVERCAST
-    assert (today.sunrise, today.sunset) == ("07:31", "19:39")
-    assert (today.feels_max, thu.feels_max) == (18, -2)
+def om_doc(offset_h=2, days=("2026-09-23", "2026-09-24")):
+    """Two days of hours, labelled with a fixed offset as Open-Meteo does."""
+    times = [f"{d}T{h:02d}:00" for d in days for h in range(24)]
+    return {"utc_offset_seconds": offset_h * 3600,
+            "hourly": {"time": times, "temperature_2m": [float(i) for i in range(len(times))],
+                       "weather_code": [3] * len(times), "precipitation": [0.0] * len(times),
+                       "snowfall": [0.0] * len(times), "sunshine_duration": [3600.0] * len(times),
+                       "cloud_cover": [10] * len(times)},
+            "daily": {"time": list(days),
+                      "temperature_2m_max": [18.7, -0.6], "temperature_2m_min": [11.2, -3.5],
+                      "apparent_temperature_max": [17.5, -2.4],
+                      "sunrise": [f"{days[0]}T07:31", f"{days[1]}T07:33"],
+                      "sunset": [f"{days[0]}T19:39", f"{days[1]}T19:37"],
+                      "wind_speed_10m_max": [24.9, 30.0], "wind_gusts_10m_max": [41.0, 50.0],
+                      "uv_index_max": [3.45, 1.0]}}
+
+
+def test_parse_om():
+    om = parse_om(om_doc())
+    wed, thu = om.days.values()
+    assert list(om.days) == [date(2026, 9, 23), date(2026, 9, 24)]
+    assert (wed.day_name, thu.day_name) == ("Wed", "Thu")
+    assert (wed.temp_max, wed.temp_min, thu.temp_max, thu.temp_min) == (19, 11, -1, -4)
+    assert (wed.feels_max, thu.feels_max) == (18, -2)
+    assert (wed.sunrise, wed.sunset) == ("07:31", "19:39")
+    assert wed.category == Category.CLEAR
+    assert (len(om.hours), om.hours[0].time) == (48, datetime(2026, 9, 23, 0, 0))
+
+
+def test_open_meteo_labels_are_corrected_across_dst():
+    """Asked in summer for a day in winter, Open-Meteo still labels it UTC+2."""
+    om = parse_om(om_doc(offset_h=2, days=("2026-10-25", "2026-10-26")))
+    day = om.days[date(2026, 10, 26)]
+    assert (day.sunrise, day.sunset) == ("06:33", "18:37")
+    assert om.hours[-1].time == datetime(2026, 10, 26, 22, 0)
+    # The autumn switch: 02:00-03:00 happens twice, and every label after it is corrected.
+    oct25 = [h.time for h in om.hours if h.time.date() == date(2026, 10, 25)]
+    assert oct25[:5] == [datetime(2026, 10, 25, h) for h in (0, 1, 2, 2, 3)]
+    assert (len(oct25), oct25[-1]) == (25, datetime(2026, 10, 25, 23, 0))   # a 25-hour day
+
+    # The recording of January asked in September: sunrise is 08:50, not 09:50.
+    jan = parse_om(json.loads((DATA / "om_snow_2026_01" / "om.json").read_text()))
+    assert jan.days[date(2026, 1, 4)].sunrise == "08:50"
+
+
+@pytest.mark.parametrize("folder, expected", [
+    ("om_week1", {"2026-09-24": Category.PARTLY_CLOUDY, "2026-09-25": Category.CLEAR,
+                  "2026-09-26": Category.PARTLY_CLOUDY, "2026-09-27": Category.PARTLY_CLOUDY,
+                  "2026-09-28": Category.SHOWERS, "2026-09-29": Category.PARTLY_CLOUDY,
+                  "2026-09-30": Category.OVERCAST}),
+    ("om_snow_2026_01", {"2026-01-04": Category.RAIN, "2026-01-05": Category.SNOW,
+                         "2026-01-06": Category.SHOWERS, "2026-01-07": Category.SNOW,
+                         "2026-01-08": Category.SHOWERS}),
+])
+def test_recorded_weeks_match_the_plan(folder, expected):
+    """docs/weather-categories.md, "Results so far"."""
+    om = parse_om(json.loads((DATA / folder / "om.json").read_text()))
+    assert {d.isoformat(): f.category for d, f in om.days.items()} == expected
+
+
+def test_the_chart_and_the_week_are_cut_from_one_list_at_any_age():
+    om = parse_om(om_doc())
+    temps = hours_ahead(om, datetime(2026, 9, 23, 22, 40))
+    assert temps[0] == 22.0 and len(temps) == 24
+    assert len(hours_ahead(om, datetime(2026, 9, 24, 3, 10))) == 21       # what is left
+    assert hours_ahead(om, datetime(2026, 9, 25, 0, 5)) == []
+
+    # Just after midnight with yesterday's list: the week starts today, with one day fewer.
+    week = week_ahead(om, datetime(2026, 9, 24, 0, 20))
+    assert [d.day_name for d in week] == ["Today"]
+    assert [d.day_name for d in week_ahead(om, datetime(2026, 9, 23, 8, 0))] == ["Today", "Thu"]
+    assert week_ahead(om, datetime(2026, 9, 25, 0, 20)) == []
 
 
 def test_recorded_evening_shows_both_remaining_trains():

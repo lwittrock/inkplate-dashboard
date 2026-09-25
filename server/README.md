@@ -81,7 +81,8 @@ Changed on purpose since then, besides the redesign:
 2. **`precipitation_hours` is read.** Open-Meteo sends it as a JSON float
    (`12.0`), and the firmware's `precipHours[i] | 0` returns the default for
    anything not stored as an integer (ArduinoJson 7.4.3), so the "3 or more
-   hours of precipitation means drizzle" rule never fired.
+   hours of precipitation means drizzle" rule never fired. (Since 25 September
+   2026 the week's icons come from the hourly values instead: item 6.)
 3. **"Wet and windy" appears.** In the firmware, notable wind always set the
    "Windy" override first, and the combo needed no override to be set.
    Now a rainy, windy day reads "Wet and windy"; stormy, freezing, cold and
@@ -92,6 +93,11 @@ Changed on purpose since then, besides the redesign:
 5. **Structure.** Parsers turn JSON into typed records (`model.py`); the
    logic modules no longer see raw JSON or "HH:MM" strings. The unused
    `precipitation_probability_max` is no longer fetched.
+6. **The week's icons judge the daytime.** Open-Meteo's daily code is the
+   worst hour of 24, nights included; each day is now judged on its hourly
+   values for 07:00-21:00, with a sun-and-showers icon for a few wet hours
+   on a bright day. Rules and the data behind them:
+   [`../docs/weather-categories.md`](../docs/weather-categories.md).
 
 Server-side by design (see the design document): per-source caching in
 `collect.py` replaces the firmware's RTC caches, and the footer battery shows

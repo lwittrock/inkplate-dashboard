@@ -1,7 +1,9 @@
-# Weather categories: plan (not built yet)
+# Weather categories
 
-Status, 24 September 2026: agreed in outline, not implemented. The greeting's
-wording is left for later. Everything here is server-only (`server/screen/`).
+Status, 25 September 2026: built on branch `weather-categories` (rules in
+`server/screen/weather.py`, the request and parser in `sources.py`, the icon in
+`render.py`). The greeting's wording is still left for later; the new category
+only got a placeholder, "Showery". Everything here is server-only (`server/screen/`).
 
 ## Why
 
@@ -59,10 +61,13 @@ lot of sun and a bit of cloud", which is partly cloudy.
 
 ## The sun-and-showers icon
 
-Material Symbols has no sun-with-rain glyph. Draw it from two we have: `rainy`
-at 86% size, bottom left, and `sunny` at 60% (weight 600, so its strokes match)
-top right, with the sun knocked out around the cloud's silhouette plus a gap.
-Reads at 48 px in greyscale and 1-bit. Make it a little bigger than the draft.
+Material Symbols has no sun-with-rain glyph. It is drawn from two we have
+(`render._showers_mask`): `rainy` at 86% size, bottom left, and `sunny` at 64%
+top right, 200 weight units heavier than the cloud so its strokes match (600 in
+the week row, 500 in NOW), knocked out around the cloud's silhouette plus a gap
+of 6% of the box. A ray the gap would cut is dropped whole, since a sliver of one
+reads as a speck; only the disc is cut into an arc. Reads at 48 and 128 px, in
+greyscale and 1-bit.
 
 Also in NOW: Buienradar `f`, `h`, `k` ("afwisselend bewolkt met (lichte) regen")
 use it by day; plain rain by night.
@@ -72,23 +77,29 @@ use it by day; plain rain by night.
 `q` (zwaar bewolkt en regen) rain, not heavy rain; `m` (zwaar bewolkt met wat
 lichte regen) drizzle, not heavy rain; `l` rain, not thunderstorm; `t` (zware
 sneeuwval) snow, was missing; `j` (opklaringen en hoge bewolking) partly
-cloudy, not clear (as Home Assistant / python-buienradar do). Log codes not seen
-before with the feed's `weatherdescription`.
+cloudy, not clear (as Home Assistant / python-buienradar do). `w` (regen en
+winterse neerslag) stays snow. No code means heavy rain any more. Codes not seen
+before are logged once, with the feed's `weatherdescription`, and shown as overcast.
 
 ## Data
 
-- One Open-Meteo request, refreshed hourly (KNMI's model runs hourly), with
-  hourly `temperature_2m, weather_code, precipitation, snowfall,
-  sunshine_duration, cloud_cover, visibility` for 7 days, plus the daily values
-  the greeting still uses (highs and lows, feels-like, sunrise and sunset,
-  wind, gusts, UV). The 24-hour chart slices the same list, which also ends the
-  chart vanishing when a fetch fails just after the hour.
-- **Ask for UTC (`timezone=GMT`) and convert each timestamp with `zoneinfo`.**
-  Open-Meteo labels a whole response with the offset in effect *when asked*
-  (`timezone.secondsFromGMT()` in its source): the January data asked for in
-  September came back as GMT+2, an hour off. Live, every forecast that spans a
-  DST switch is an hour off after it. Today's code has this too (sunrise and
-  sunset strings, the hourly list) for the days after a switch.
+- One Open-Meteo request, refreshed hourly (KNMI's model runs hourly) and kept
+  for 12 hours when a fetch fails, with hourly `temperature_2m, weather_code,
+  precipitation, snowfall, sunshine_duration, cloud_cover` for 7 days, plus
+  the daily values the greeting still uses (highs and lows, feels-like, sunrise
+  and sunset, wind, gusts, UV). The 24-hour chart and the week are cut from it
+  at each render (`collect.hours_ahead`, `week_ahead`), which also ends the
+  chart vanishing when a fetch fails just after the hour. Just after midnight
+  with yesterday's copy, the week shows six days.
+- **Timestamps: undo `utc_offset_seconds`, then convert with `zoneinfo`**
+  (`sources.om_time`). Open-Meteo labels a whole response with the offset in
+  effect *when asked* (`timezone.secondsFromGMT()` in its source): the January
+  data asked for in September came back as GMT+2, an hour off (sunrise 09:50,
+  really 08:50). Live, every forecast that spans a DST switch was an hour off
+  after it. The request still asks for local time (`timezone=auto`), not GMT:
+  in GMT the daily values would cover 02:00-02:00 local days, and between
+  midnight and 02:00 the seventh day would have no hours. The daily highs and
+  lows after a switch are aggregated over a day shifted by an hour; negligible.
 - Open-Meteo's `best_match` for Delft already layers KNMI HARMONIE (2 km, ~60 h)
   over DWD ICON and ECMWF: no need to go to KNMI directly. KNMI's model has no
   instability fields, so the first ~2.5 days never get thunderstorm codes;
@@ -117,13 +128,21 @@ Results so far, old rules vs new (measured, 07:00-21:00, in brackets):
 | Wed 7 Jan | snow | snow | 8.1 mm in 10 hours, no sun |
 | Thu 8 Jan | partly cloudy | sun and showers | 0.4 mm, 1.0 h sun, overcast: the model's sun was wrong |
 
+A consequence to check against the thunderstorm data: a summer day with one
+hour of downpour or thunder (10 mm, say) and sun otherwise shows the sky, since
+one wet or thundery hour doesn't count. That fits "what most of the day is
+like", and is the rule most likely to be revisited.
+
 Still to test with real data: fog, thunderstorms, a showery spring week, a grey
 autumn day, a storm (links in the conversation of 24 September; the Historical
 Forecast API with `timezone=GMT`, and `daggegevens.knmi.nl/klimatologie/uurgegevens`
 for the measurements).
 
-Building it: tests per rule and edge, a log line per day with the numbers behind
-the choice, a preview before merging.
+Built with tests per rule and edge (`tests/test_weather.py`), the table above
+checked against both recordings (`tests/test_sources.py`), and a log line per
+day and fetch with the counts behind the choice, e.g.
+`2026-09-30: showers (wet 4 h, 6.9 mm, ... sky 0 clear/6 partly/5 overcast)`.
+The rain amount (drizzle, rain, heavy) is the window's total.
 
 ## Later: the greeting
 

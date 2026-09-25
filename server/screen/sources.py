@@ -5,15 +5,19 @@ default rather than an exception, so one odd value never costs a section.
 """
 
 import json
+import logging
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .config import Settings
-from .model import Departure, DayForecast, RainSample, Station, Transfer, round_half_away
-from .weather import daily_category
+from .model import (Departure, DayForecast, Forecast, HourForecast, RainSample, Station, Transfer,
+                    round_half_away)
+from .weather import count_day, day_category, known_icon
+
+log = logging.getLogger(__name__)
 
 TZ = ZoneInfo("Europe/Amsterdam")
 TIMEOUT_S = 10
@@ -27,10 +31,10 @@ NS_TRIPS_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips"
 
 DAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]  # not %a: that follows the locale
 
+HOURLY_FIELDS = "temperature_2m,weather_code,precipitation,snowfall,sunshine_duration,cloud_cover"
+# What the greeting and the masthead still take from the daily values.
 DAILY_FIELDS = (
-    "temperature_2m_max,temperature_2m_min,weather_code,"
-    "sunshine_duration,daylight_duration,precipitation_sum,precipitation_hours,snowfall_sum,"
-    "sunrise,sunset,"
+    "temperature_2m_max,temperature_2m_min,sunrise,sunset,"
     "wind_speed_10m_max,wind_gusts_10m_max,apparent_temperature_max,uv_index_max"
 )
 
@@ -76,22 +80,26 @@ def local_time(v) -> datetime | None:
     return t.astimezone(TZ).replace(tzinfo=None) if t.tzinfo else t
 
 
-def hhmm_of(v) -> str:
-    """"2026-09-23T07:31" -> "07:31"."""
-    s = text(v)
-    return s[11:16] if len(s) >= 16 else ""
+def om_time(v, offset: timedelta) -> datetime | None:
+    """An Open-Meteo timestamp -> naive Amsterdam wall-clock time.
+
+    Open-Meteo labels a whole response with the UTC offset in effect when it
+    was asked (`utc_offset_seconds`), so after a DST switch its labels are an
+    hour off. Undo that offset and convert properly."""
+    if not isinstance(v, str):
+        return None
+    try:
+        t = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    return (t - offset).replace(tzinfo=timezone.utc).astimezone(TZ).replace(tzinfo=None)
 
 
 # --- URLs ------------------------------------------------------------------------
 
-def om_hourly_url(s: Settings) -> str:
+def om_url(s: Settings) -> str:
     return (f"{OPEN_METEO_URL}?latitude={s.latitude:.4f}&longitude={s.longitude:.4f}"
-            "&hourly=temperature_2m&forecast_hours=24&timezone=auto")
-
-
-def om_daily_url(s: Settings) -> str:
-    return (f"{OPEN_METEO_URL}?latitude={s.latitude:.4f}&longitude={s.longitude:.4f}"
-            f"&daily={DAILY_FIELDS}&forecast_days=7&timezone=auto")
+            f"&hourly={HOURLY_FIELDS}&daily={DAILY_FIELDS}&forecast_days=7&timezone=auto")
 
 
 def br_rain_url(s: Settings) -> str:
@@ -104,50 +112,55 @@ def ns_trips_url(from_station: str, to_station: str, max_count: int = 6) -> str:
 
 # --- parsers -----------------------------------------------------------------------
 
-def parse_om_hourly(doc: dict) -> list[float]:
-    temps = (doc.get("hourly") or {}).get("temperature_2m")
-    return [num(v) for v in temps[:24]] if isinstance(temps, list) else []
+def parse_om(doc: dict) -> Forecast | None:
+    """Hours and days, in local time. A day's category comes from its hours
+    (weather.day_category); each is logged with the counts behind it."""
+    offset = timedelta(seconds=num(doc.get("utc_offset_seconds")))
+    hourly, daily = doc.get("hourly") or {}, doc.get("daily") or {}
 
+    def col(block: dict, name: str, n: int) -> list:
+        v = block.get(name)
+        return v + [None] * (n - len(v)) if isinstance(v, list) else [None] * n
 
-def parse_om_daily(doc: dict) -> list[DayForecast]:
-    daily = doc.get("daily") or {}
+    times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
+    n = len(times)
+    hours = [HourForecast(time=t, temp=num(temp), code=int(num(code)), precip_mm=num(mm),
+                          snow_cm=num(snow), sun_s=num(sun), cloud_pct=num(cloud))
+             for t, temp, code, mm, snow, sun, cloud in zip(
+                 (om_time(v, offset) for v in times), col(hourly, "temperature_2m", n),
+                 col(hourly, "weather_code", n), col(hourly, "precipitation", n),
+                 col(hourly, "snowfall", n), col(hourly, "sunshine_duration", n),
+                 col(hourly, "cloud_cover", n))
+             if t is not None]
 
-    def at(name: str, i: int):
-        col = daily.get(name)
-        return col[i] if isinstance(col, list) and i < len(col) else None
-
-    days = daily.get("temperature_2m_max")
-    out = []
-    for i in range(min(7, len(days) if isinstance(days, list) else 0)):
-        cat, sunny = daily_category(
-            api_code=int(num(at("weather_code", i))),
-            precip_sum=num(at("precipitation_sum", i)),
-            precip_hours=num(at("precipitation_hours", i)),
-            snowfall_sum=num(at("snowfall_sum", i)),
-            sunshine_h=num(at("sunshine_duration", i)) / 3600,
-            daylight_h=num(at("daylight_duration", i)) / 3600,
-        )
-        if i == 0:
-            day_name = "Today"
-        else:
-            try:
-                day_name = DAY_ABBR[datetime.strptime(text(at("time", i))[:10], "%Y-%m-%d").weekday()]
-            except ValueError:
-                day_name = "?"
-        out.append(DayForecast(
-            day_name=day_name,
-            temp_max=round_half_away(num(at("temperature_2m_max", i))),
-            temp_min=round_half_away(num(at("temperature_2m_min", i))),
-            feels_max=round_half_away(num(at("apparent_temperature_max", i))),
+    n = len(daily.get("time")) if isinstance(daily.get("time"), list) else 0
+    days = {}
+    for tmax, tmin, feels, rise, set_, wind, gust, uv in zip(
+            col(daily, "temperature_2m_max", n), col(daily, "temperature_2m_min", n),
+            col(daily, "apparent_temperature_max", n), col(daily, "sunrise", n),
+            col(daily, "sunset", n), col(daily, "wind_speed_10m_max", n),
+            col(daily, "wind_gusts_10m_max", n), col(daily, "uv_index_max", n)):
+        sunrise, sunset = om_time(rise, offset), om_time(set_, offset)
+        if sunrise is None or sunset is None:
+            continue
+        if not any(h.time.date() == sunrise.date() for h in hours):
+            continue
+        counts = count_day(hours, sunrise, sunset)
+        cat = day_category(counts)
+        log.info("%s: %s (%s)", sunrise.date(), cat.name.lower(), counts)
+        days[sunrise.date()] = DayForecast(
+            day_name=DAY_ABBR[sunrise.weekday()],
+            temp_max=round_half_away(num(tmax)),
+            temp_min=round_half_away(num(tmin)),
+            feels_max=round_half_away(num(feels)),
             category=cat,
-            sunny_variant=sunny,
-            sunrise=hhmm_of(at("sunrise", i)),
-            sunset=hhmm_of(at("sunset", i)),
-            wind_max_kmh=num(at("wind_speed_10m_max", i)),
-            gust_max_kmh=num(at("wind_gusts_10m_max", i)),
-            uv_max=num(at("uv_index_max", i)),
-        ))
-    return out
+            sunrise=f"{sunrise:%H:%M}",
+            sunset=f"{sunset:%H:%M}",
+            wind_max_kmh=num(wind),
+            gust_max_kmh=num(gust),
+            uv_max=num(uv),
+        )
+    return Forecast(hours, days) if hours and days else None
 
 
 _DUTCH_CARDINALS = {
@@ -167,6 +180,9 @@ def icon_code_from_url(iconurl) -> str:
     return code if len(code) <= 2 else ""
 
 
+_unknown_icons: set[str] = set()     # logged once per process
+
+
 def parse_br_stations(doc: dict) -> list[Station]:
     """Stations with a weather icon and a temperature; the others are useless."""
     raw = (doc.get("actual") or {}).get("stationmeasurements")
@@ -177,6 +193,10 @@ def parse_br_stations(doc: dict) -> list[Station]:
         code = icon_code_from_url(s.get("iconurl"))
         if not code or s.get("temperature") is None:
             continue
+        description = text(s.get("weatherdescription"))
+        if not known_icon(code) and code not in _unknown_icons:
+            _unknown_icons.add(code)
+            log.warning("Buienradar icon %r is new (shown as overcast): %s", code, description)
         bearing = s.get("winddirectiondegrees")
         if not isinstance(bearing, (int, float)) or bearing < 0:
             bearing = _DUTCH_CARDINALS.get(text(s.get("winddirection")), 0)
@@ -191,6 +211,7 @@ def parse_br_stations(doc: dict) -> list[Station]:
             bearing=int(bearing),
             feels=num(s.get("feeltemperature"), None),
             gust_ms=num(s.get("windgusts"), None),
+            description=description,
         ))
     return out
 
@@ -268,9 +289,9 @@ def parse_trips(doc: dict, origin: str, max_count: int = 6) -> list[Departure]:
 # A fetcher returns the raw response body for a source key. The collector
 # parses; fixtures replay recorded bodies through the same parsers.
 
-KEYS = ("om_hourly", "om_daily", "br_feed", "br_rain", "ns_ctr", "ns_hs")
+KEYS = ("om", "br_feed", "br_rain", "ns_ctr", "ns_hs")
 FIXTURE_FILES = {
-    "om_hourly": "om_hourly.json", "om_daily": "om_daily.json",
+    "om": "om.json",
     "br_feed": "br_feed.json", "br_rain": "br_rain.txt",
     "ns_ctr": "ns_ctr.json", "ns_hs": "ns_hs.json",
 }
@@ -282,10 +303,8 @@ class LiveFetcher:
 
     def get(self, key: str) -> bytes:
         s = self.s
-        if key == "om_hourly":
-            return http_get(om_hourly_url(s))
-        if key == "om_daily":
-            return http_get(om_daily_url(s))
+        if key == "om":
+            return http_get(om_url(s))
         if key == "br_feed":
             return http_get(BUIENRADAR_FEED_URL)
         if key == "br_rain":
@@ -332,8 +351,7 @@ def parse(key: str, body: bytes):
     if not isinstance(doc, dict):
         return []
     return {
-        "om_hourly": parse_om_hourly,
-        "om_daily": parse_om_daily,
+        "om": parse_om,
         "br_feed": parse_br_stations,
         "ns_ctr": lambda d: parse_trips(d, "CTR"),
         "ns_hs": lambda d: parse_trips(d, "HS"),

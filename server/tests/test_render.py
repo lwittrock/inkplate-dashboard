@@ -17,11 +17,10 @@ def dep(origin, time, arr, **kw):
 
 
 def busy_snapshot(hour=17):
-    days = [DayForecast(n, 18, 9, 17, cat, sunny, "07:31", "19:39", 20.0, 45.0, 3.0)
-            for n, cat, sunny in [("Today", Category.RAIN, False), ("Thu", Category.CLEAR, False),
-                                  ("Fri", Category.DRIZZLE, True), ("Sat", Category.SNOW, True),
-                                  ("Sun", Category.FOG, False), ("Mon", Category.THUNDERSTORM, False),
-                                  ("Tue", Category.RAIN_HEAVY, False)]]
+    days = [DayForecast(n, 18, 9, 17, cat, "07:31", "19:39", 20.0, 45.0, 3.0)
+            for n, cat in [("Today", Category.RAIN), ("Thu", Category.CLEAR), ("Fri", Category.SHOWERS),
+                           ("Sat", Category.SNOW), ("Sun", Category.FOG), ("Mon", Category.THUNDERSTORM),
+                           ("Tue", Category.RAIN_HEAVY)]]
     rain = [RainSample(0.0 if i < 4 else 0.3 * i, f"{hour + (i * 5) // 60:02d}:{(i * 5) % 60:02d}")
             for i in range(24)]
     return Snapshot(

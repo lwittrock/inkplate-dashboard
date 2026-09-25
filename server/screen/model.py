@@ -4,7 +4,7 @@ All times are naive local datetimes (Europe/Amsterdam wall clock).
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from enum import IntEnum
 from typing import NamedTuple
 
@@ -19,9 +19,11 @@ class Category(IntEnum):
     RAIN_HEAVY = 6
     SNOW = 7
     THUNDERSTORM = 8
+    SHOWERS = 9                 # sun and showers: a few wet hours on a day that is otherwise bright
 
 
-RAIN_FAMILY = {Category.DRIZZLE, Category.RAIN, Category.RAIN_HEAVY, Category.THUNDERSTORM}
+RAIN_FAMILY = {Category.DRIZZLE, Category.RAIN, Category.RAIN_HEAVY, Category.THUNDERSTORM,
+               Category.SHOWERS}
 
 
 class Transfer(IntEnum):
@@ -59,12 +61,31 @@ class DayForecast:
     temp_min: int
     feels_max: int
     category: Category
-    sunny_variant: bool         # sun-with-rain/snow icon
     sunrise: str                # "HH:MM", "" if unknown
     sunset: str
     wind_max_kmh: float
     gust_max_kmh: float
     uv_max: float
+
+
+@dataclass
+class HourForecast:
+    """One hour of Open-Meteo's forecast. The sums (precipitation, snow,
+    sunshine) cover the hour before `time`; temperature and cloud are at `time`."""
+    time: datetime
+    temp: float
+    code: int                   # WMO weather code
+    precip_mm: float
+    snow_cm: float
+    sun_s: float
+    cloud_pct: float
+
+
+@dataclass
+class Forecast:
+    """Open-Meteo's week: every hour from midnight today, and the days by date."""
+    hours: list[HourForecast]
+    days: dict[date, DayForecast]
 
 
 @dataclass
@@ -80,6 +101,7 @@ class Station:
     bearing: int                # degrees the wind comes from
     feels: float | None = None
     gust_ms: float | None = None
+    description: str = ""       # the feed's weatherdescription, for logging unknown codes
 
 
 @dataclass

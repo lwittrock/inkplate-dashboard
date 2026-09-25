@@ -196,8 +196,7 @@ client. Fewer dependencies means less that an automatic deploy pulls from PyPI.
 
   | Source | TTL | Notes |
   |---|---|---|
-  | Open-Meteo hourly | 15 min | |
-  | Open-Meteo daily | 6 h, or at the date change | As today |
+  | Open-Meteo (hourly and daily, 7 days) | 1 h | One request since 25 September 2026 (docs/weather-categories.md) |
   | Buienradar feed (now) | 10 min | Consensus vote as today |
   | Buienradar rain | 5 min | The nowcast is what makes freshness matter |
   | NS GVC→TBU | 5 min | |

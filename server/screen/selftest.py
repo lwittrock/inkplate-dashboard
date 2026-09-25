@@ -36,8 +36,7 @@ def _check_frame(name: str, snap: Snapshot) -> None:
 
 def _synthetic(hour: int) -> Snapshot:
     now = datetime(2026, 9, 23, hour, 5)
-    day = lambda name, cat, sunny: DayForecast(name, 18, 9, 17, cat, sunny, "07:31", "19:39",
-                                               30.0, 45.0, 3.0)
+    day = lambda name, cat: DayForecast(name, 18, 9, 17, cat, "07:31", "19:39", 30.0, 45.0, 3.0)
     dep = lambda origin, hhmm, **kw: Departure(
         origin=origin, planned=now.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:])),
         departs=now.replace(hour=int(hhmm[:2]), minute=int(hhmm[3:])),
@@ -48,11 +47,10 @@ def _synthetic(hour: int) -> Snapshot:
         weather=WeatherNow(temp=-3.7, wind_kmh=42.4, category=Category.RAIN_HEAVY, wind_bearing=225),
         rain=[RainSample(0.3 * i, f"{hour:02d}:{i * 5 % 60:02d}") for i in range(12)],
         hourly=[12 - abs(12 - i) * 0.4 for i in range(24)],
-        forecast=[day(n, c, s) for n, c, s in [
-            ("Today", Category.RAIN, False), ("Thu", Category.CLEAR, False),
-            ("Fri", Category.DRIZZLE, True), ("Sat", Category.SNOW, True),
-            ("Sun", Category.FOG, False), ("Mon", Category.THUNDERSTORM, False),
-            ("Tue", Category.PARTLY_CLOUDY, False)]],
+        forecast=[day(n, c) for n, c in [
+            ("Today", Category.RAIN), ("Thu", Category.CLEAR), ("Fri", Category.SHOWERS),
+            ("Sat", Category.SNOW), ("Sun", Category.FOG), ("Mon", Category.THUNDERSTORM),
+            ("Tue", Category.PARTLY_CLOUDY)]],
         departures=[dep("CTR", f"{hour:02d}:10", delay=12, transfer=Transfer.LATE),
                     dep("HS", f"{hour:02d}:14"), dep("CTR", f"{hour:02d}:40", cancelled=True)],
         battery_v=3.9, firmware="selftest")

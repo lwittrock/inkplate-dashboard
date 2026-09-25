@@ -66,6 +66,7 @@ class DayForecast:
     wind_max_kmh: float
     gust_max_kmh: float
     uv_max: float
+    day: date | None = None     # the date, for /data; None where a test or mockup builds one by hand
 
 
 @dataclass
@@ -179,6 +180,7 @@ class Snapshot:
     weather: WeatherNow | None = None
     rain: list[RainSample] = field(default_factory=list)          # next 2 h, 5-minute steps
     hourly: list[float] = field(default_factory=list)             # next 24 h, from this hour
+    hours: list[HourForecast] = field(default_factory=list)       # the same hours in full, for /data
     forecast: list[DayForecast] = field(default_factory=list)
     departures: list[Departure] = field(default_factory=list)
     trains_ok: bool = True      # False: NS gave nothing at all, as opposed to "no trains soon"

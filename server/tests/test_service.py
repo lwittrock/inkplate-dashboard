@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from screen.config import Settings
+from screen.model import Category
 from screen.nowlog import NowLog
 from screen.service import Service, make_handler
 from screen.sources import FixtureFetcher
@@ -111,6 +112,28 @@ def test_preview_status_and_unknown_paths(svc):
     assert st["now"]["shown"] == st["now"]["vote"] == "overcast"     # 21:39: no sun to overrule it
     assert st["now"]["why"].startswith("overcast (vote; vote overcast; ")
     assert get("/nope")[0] == 404
+
+
+def test_data_serves_the_last_render_with_offsets(svc):
+    service, _, get, _, _ = svc
+    status, headers, body = get("/data")
+    d = json.loads(body)
+    assert (status, headers["Content-Type"]) == (200, "application/json")
+    assert d["rendered_at"] == "2026-09-23T21:39:30+02:00"
+    assert [(t["origin"], t["departs"], t["arrives"]) for t in d["trains"]["departures"]] == [
+        ("CTR", "2026-09-23T21:49:00+02:00", "2026-09-23T23:10:00+02:00"),
+        ("CTR", "2026-09-23T22:49:00+02:00", "2026-09-24T00:10:00+02:00")]    # after midnight
+    assert d["trains"]["ok"] is True and d["trains"]["departures"][0]["transfer"] == "ok"
+    w = d["weather"]
+    assert w["now"]["category"] == "overcast"            # what the wall shows, as in /status
+    assert len(w["hours"]) == 24 and w["hours"][0]["at"] == "2026-09-23T21:00:00+02:00"
+    assert [x["date"] for x in w["days"]][:2] == ["2026-09-23", "2026-09-24"]
+    assert w["days"][0]["name"] == "Today"
+    assert {x["category"] for x in w["days"]} <= {c.name.lower() for c in Category}
+    assert all(r["time"][2] == ":" for r in w["rain"])
+
+    service.snapshot = None
+    assert get("/data")[0] == 503
 
 
 def test_now_log_serves_each_renders_choice(svc):

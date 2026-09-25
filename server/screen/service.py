@@ -13,6 +13,8 @@ Endpoints:
     GET /status        last render, last device report with its battery %, and
                        why NOW shows what it shows, as JSON (Homepage reads it)
     GET /now-log?days=7   NOW's choices of the last days, one JSON line per render
+    GET /data          the last render's weather and trains as JSON, for Home
+                       Assistant's dashboards (see data.py); 503 before the first
 
 The contract is described in docs/server-rendering-design.md. Change it only
 backward-compatibly: the service deploys in minutes, the device after midnight.
@@ -35,7 +37,8 @@ from zoneinfo import ZoneInfo
 from . import frames, render, schedule
 from .collect import Collector
 from .config import SERVER_DIR, Settings, load_env_file
-from .model import NowChoice
+from .data import snapshot_data
+from .model import NowChoice, Snapshot
 from .nowlog import KEEP, NowLog
 from .sources import FixtureFetcher, LiveFetcher
 from .telemetry import Forwarder, Report, State, battery_percent
@@ -65,6 +68,7 @@ class Service:
         self.rendered_at: datetime | None = None
         self.now_log = now_log
         self.now_choice: NowChoice | None = None
+        self.snapshot: Snapshot | None = None
 
     # --- rendering ------------------------------------------------------------
 
@@ -88,7 +92,7 @@ class Service:
         (grey if self.settings.screen_format == "grey" else mono.convert("L")).save(buf, format="PNG")
         with self.lock:
             self.bodies, self.png, self.rendered_at = bodies, buf.getvalue(), now
-            self.now_choice = choice
+            self.now_choice, self.snapshot = choice, snap
         log.info("rendered %s: %d departures, weather %s", f"{now:%H:%M}", len(snap.departures),
                  "ok" if snap.weather else "missing")
 
@@ -162,6 +166,12 @@ class Service:
                     "why": str(c)},
             }
 
+    def data(self) -> dict | None:
+        with self.lock:
+            snap = self.snapshot
+        # A snapshot is not changed after its render, so it needs no lock to read.
+        return None if snap is None else snapshot_data(snap)
+
     def now_log_since(self, days: int) -> bytes:
         if not self.now_log:
             return b""
@@ -184,6 +194,12 @@ def make_handler(service: Service):
                 self._reply(200, "image/png", png)
             elif url.path == "/status":
                 self._reply(200, "application/json", json.dumps(service.status(), indent=1).encode())
+            elif url.path == "/data":
+                data = service.data()
+                if data is None:
+                    self._reply(503, "text/plain", b"no render yet\n")
+                else:
+                    self._reply(200, "application/json", json.dumps(data, indent=1).encode())
             elif url.path == "/now-log":
                 try:
                     days = min(max(int(parse_qs(url.query).get("days", ["7"])[0]), 1), KEEP.days)

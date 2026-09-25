@@ -29,14 +29,19 @@ POLICY = {
 }
 
 
-def hours_ahead(om: Forecast, now: datetime) -> list[float]:
-    """Temperatures for 24 hours from the top of this hour. Empty when the
-    list lacks this hour: render.temp_chart takes the first value as it."""
+def hours_from(om: Forecast, now: datetime) -> list[HourForecast]:
+    """24 hours from the top of this hour. Empty when the list lacks this
+    hour: render.temp_chart takes the first value as it."""
     top = now.replace(minute=0, second=0, microsecond=0)
     start = next((i for i, h in enumerate(om.hours) if h.time >= top), None)
     if start is None or om.hours[start].time != top:
         return []
-    return [h.temp for h in om.hours[start:start + 24]]
+    return om.hours[start:start + 24]
+
+
+def hours_ahead(om: Forecast, now: datetime) -> list[float]:
+    """The temperatures of hours_from, for the chart."""
+    return [h.temp for h in hours_from(om, now)]
 
 
 def hour_now(om: Forecast, now: datetime) -> HourForecast | None:
@@ -92,7 +97,8 @@ class Collector:
 
         om = self._get("om", now)
         if om:
-            snap.hourly, snap.forecast = hours_ahead(om, now), week_ahead(om, now)
+            snap.hours, snap.forecast = hours_from(om, now), week_ahead(om, now)
+            snap.hourly = [h.temp for h in snap.hours]
 
         stations = self._get("br_feed", now)
         if stations:

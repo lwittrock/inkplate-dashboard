@@ -56,6 +56,7 @@ that never touch the device behind glass.
  |       POST telemetry -> HA webhook  -------+------> VM 100 Home Assistant .18:80
  |       ping healthchecks `inkplate`         |
  |   GET /preview.png  <----------------------+-------- laptop (management set)
+ |   GET /data         <----------------------+-------- Home Assistant, every minute
  +--------------------------------------------+
 ```
 
@@ -283,6 +284,20 @@ the schedule policy below:
 
 Because the service does the pinging, a dead server also makes this check go quiet, alongside the
 server's own checks. That's acceptable: either way the screen is not updating.
+
+### The screen's data for Home Assistant (`/data`)
+
+Added 25 September 2026 for two HA dashboards, Weather and Trains (Phase 11 in the
+`homeserver-docs` repo's `plan.md`). `GET /data` returns the last render's `Snapshot` as JSON:
+the weather now, rain for the next 2 hours, 24 hours ahead, the week with dates, the same up to
+three departures the wall shows, and whether NS answered. HA polls it; nothing is fetched for it,
+so HA and the wall cannot disagree and the NS key stays in CT 106. The rules for its shape
+(times with their UTC offset, categories as the `Category` names in lower case, which HA maps and
+which must not be renamed) are in [server/screen/data.py](../server/screen/data.py). It is not
+part of the device's contract, but the same care applies: HA's templates read its field names.
+
+There is no category per hour: the category rules judge a day, and their rain thresholds are
+daily totals. `/data` gives each hour's temperature, precipitation, sun minutes and cloud instead.
 
 ### Status line (option C): declined
 

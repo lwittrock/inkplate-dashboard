@@ -162,6 +162,7 @@ def parse_om(doc: dict) -> Forecast | None:
             wind_max_kmh=num(wind),
             gust_max_kmh=num(gust),
             uv_max=num(uv),
+            day=sunrise.date(),
         )
     return Forecast(hours, days) if hours and days else None
 

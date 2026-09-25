@@ -19,7 +19,8 @@ the thin firmware, was released the same evening (`v2026.09.24-01`).
 | `screen/collect.py` | Per-source cache and refresh rules, produces a `Snapshot` |
 | `screen/trains.py`, `weather.py`, `headline.py` | Picker, station vote, daily categories, greeting |
 | `screen/preview.py` | Render on the laptop, record and replay fixtures |
-| `screen/service.py` | The HTTP service: render loop, `/v1/screen`, `/preview.png`, `/status` |
+| `screen/service.py` | The HTTP service: render loop, `/v1/screen`, `/preview.png`, `/status`, `/data` |
+| `screen/data.py` | The last render's weather and trains as JSON, served at `/data` for Home Assistant's dashboards |
 | `screen/schedule.py` | When the device wakes next, OTA hint, 200 or 204, full or partial refresh |
 | `screen/telemetry.py` | The device's report: parsing, `state.json`, forwarding to HA and healthchecks.io |
 | `screen/nowlog.py` | NOW's choices with their numbers, `now.jsonl`, served at `/now-log` |

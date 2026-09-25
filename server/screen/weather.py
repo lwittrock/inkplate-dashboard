@@ -1,58 +1,123 @@
 """Weather rules: daily categories, Buienradar icon codes, the station vote.
 
 CLAUDE.md ("Buienradar mapping & fallback", "Buienradar consensus picker")
-explains why the vote exists and its known caveats.
+explains why the vote exists and its known caveats. docs/weather-categories.md
+explains the daily rules and the data behind their thresholds.
 """
 
 import math
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 
-from .model import Category, Station, WeatherNow
+from .model import Category, HourForecast, Station, WeatherNow
 
+# A day is judged on 07:00-21:00. Hourly sums cover the hour before their
+# timestamp, so that is the hours stamped 08:00 to 21:00.
+FIRST_HOUR, LAST_HOUR = 8, 21
 
-def daily_category(api_code: int, precip_sum: float, precip_hours: float,
-                   snowfall_sum: float, sunshine_h: float, daylight_h: float) -> tuple[Category, bool]:
-    """(category, use the sun-with-rain/snow icon variant) for one forecast day."""
-    # Fog and thunderstorms can't be read from daily aggregates: trust the API code.
-    if api_code in (45, 48):
-        return Category.FOG, False
-    if api_code >= 95:
-        return Category.THUNDERSTORM, False
-
-    sunny = daylight_h > 0 and sunshine_h / daylight_h >= 0.5
-    if snowfall_sum >= 1.0:
-        return Category.SNOW, sunny
-
-    # A sunny day with brief showers.
-    if sunny and 0 < precip_sum < 5.0:
-        return Category.PARTLY_CLOUDY, False
-
-    if precip_sum >= 10.0:
-        return Category.RAIN_HEAVY, sunny
-    if precip_sum >= 5.0:
-        return Category.RAIN, sunny
-    if precip_sum >= 1.0 or precip_hours >= 3:
-        return Category.DRIZZLE, sunny
-
-    ratio = sunshine_h / daylight_h if daylight_h > 0 else 0.0
-    if ratio >= 0.65:
-        return Category.CLEAR, False
-    if ratio >= 0.35:
-        return Category.PARTLY_CLOUDY, False
-    return Category.OVERCAST, False
+WET_MM = 0.3            # an hour with less is a trace, not rain
+SNOW_CM = 0.1           # 0.07 cm traces made a sunny 6 January snowy
 
 
+@dataclass(frozen=True)
+class DayCounts:
+    """What a day's window holds: hours per kind, and daylight hours per sky."""
+    wet: int = 0
+    rain_mm: float = 0.0        # the window's total
+    snow: int = 0
+    fog: int = 0
+    thunder: int = 0
+    clear: int = 0
+    partly: int = 0
+    overcast: int = 0
+
+    def __str__(self) -> str:
+        return (f"wet {self.wet} h, {self.rain_mm:.1f} mm, snow {self.snow} h, fog {self.fog} h, "
+                f"thunder {self.thunder} h, sky {self.clear} clear/{self.partly} partly/"
+                f"{self.overcast} overcast")
+
+
+def hour_sky(sun_s: float, cloud_pct: float) -> str:
+    """Sunshine and cloud together: KNMI's model often gives 95-100% cloud and
+    a full hour of sun in the same hour (thin high cloud), which is neither."""
+    if sun_s >= 45 * 60 and cloud_pct < 50:
+        return "clear"
+    if sun_s < 15 * 60 and cloud_pct >= 80:
+        return "overcast"
+    return "partly"
+
+
+def count_day(hours: list[HourForecast], sunrise: datetime, sunset: datetime) -> DayCounts:
+    """Counts over one day's window. `hours` may hold other days; the window
+    is taken from sunrise's date. The sky counts only daylight hours: at least
+    half of the hour between sunrise and sunset."""
+    day = sunrise.date()
+    window = [h for h in hours if h.time.date() == day and FIRST_HOUR <= h.time.hour <= LAST_HOUR]
+    sky = {"clear": 0, "partly": 0, "overcast": 0}
+    for h in window:
+        lit = min(h.time, sunset) - max(h.time - timedelta(hours=1), sunrise)
+        if lit >= timedelta(minutes=30):
+            sky[hour_sky(h.sun_s, h.cloud_pct)] += 1
+    return DayCounts(
+        wet=sum(h.precip_mm >= WET_MM for h in window),
+        rain_mm=sum(h.precip_mm for h in window),
+        snow=sum(h.snow_cm >= SNOW_CM for h in window),
+        fog=sum(h.code in (45, 48) for h in window),
+        thunder=sum(h.code >= 95 for h in window),
+        **sky,
+    )
+
+
+def _rain(mm: float) -> Category:
+    if mm >= 10.0:
+        return Category.RAIN_HEAVY
+    if mm >= 3.0:
+        return Category.RAIN
+    return Category.DRIZZLE
+
+
+def day_category(c: DayCounts) -> Category:
+    """What most of the day is like. First match wins."""
+    daylight = c.clear + c.partly + c.overcast
+    if c.clear > daylight / 2:
+        sky = Category.CLEAR
+    elif c.overcast > daylight / 2:
+        sky = Category.OVERCAST
+    else:
+        sky = Category.PARTLY_CLOUDY
+
+    if c.snow >= 2:
+        return Category.SNOW
+    if c.thunder >= 2:
+        return Category.THUNDERSTORM
+    if c.wet >= 5:
+        return _rain(c.rain_mm)
+    if c.fog >= 3:
+        return Category.FOG
+    if c.wet >= 2:
+        return _rain(c.rain_mm) if sky == Category.OVERCAST else Category.SHOWERS
+    return sky
+
+
+# Buienradar's icon letters, as python-buienradar and Home Assistant read them.
 _ICON_CATEGORIES = {
-    "a": Category.CLEAR, "j": Category.CLEAR,
-    "b": Category.PARTLY_CLOUDY, "o": Category.PARTLY_CLOUDY, "r": Category.PARTLY_CLOUDY,
-    "p": Category.OVERCAST, "c": Category.OVERCAST,
+    "a": Category.CLEAR,
+    "b": Category.PARTLY_CLOUDY, "j": Category.PARTLY_CLOUDY, "o": Category.PARTLY_CLOUDY,
+    "r": Category.PARTLY_CLOUDY,
+    "c": Category.OVERCAST, "p": Category.OVERCAST,
     "d": Category.FOG, "n": Category.FOG,
-    "f": Category.DRIZZLE, "k": Category.DRIZZLE,
-    "h": Category.RAIN,
-    "m": Category.RAIN_HEAVY, "q": Category.RAIN_HEAVY,
-    "g": Category.THUNDERSTORM, "s": Category.THUNDERSTORM, "l": Category.THUNDERSTORM,
-    "i": Category.SNOW, "u": Category.SNOW, "v": Category.SNOW, "w": Category.SNOW,
+    # "Afwisselend bewolkt met (lichte) regen": drawn as plain rain at night.
+    "f": Category.SHOWERS, "h": Category.SHOWERS, "k": Category.SHOWERS,
+    "m": Category.DRIZZLE,
+    "l": Category.RAIN, "q": Category.RAIN,
+    "g": Category.THUNDERSTORM, "s": Category.THUNDERSTORM,
+    "i": Category.SNOW, "t": Category.SNOW, "u": Category.SNOW, "v": Category.SNOW,
+    "w": Category.SNOW,
 }
+
+
+def known_icon(code: str) -> bool:
+    return code == "cc" or code[:1] in _ICON_CATEGORIES
 
 
 def category_from_icon(code: str) -> Category:

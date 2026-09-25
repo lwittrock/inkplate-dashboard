@@ -63,7 +63,7 @@ No NTP, no clock, no night mode, no cadence rules on the device: the server's sc
 
 | API | Auth | URL |
 |---|---|---|
-| Open-Meteo (hourly 24h + daily 7d forecast) | None | `api.open-meteo.com/v1/forecast` |
+| Open-Meteo (one request: 7 days hourly + daily) | None | `api.open-meteo.com/v1/forecast` |
 | Buienradar feed (live KNMI station observations) | None | `data.buienradar.nl/2.0/feed/json` |
 | Buienradar raintext (2h precipitation nowcast) | None | `gpsgadget.buienradar.nl/data/raintext?lat=…&lon=…` |
 | NS Trip Planner v3 (GVC→TBU and GV→TBU) | `Ocp-Apim-Subscription-Key` header | `gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips` |
@@ -98,7 +98,7 @@ All Y coordinates are absolute; the band comments at the top of `server/screen/r
 
 **IDE:** Arduino IDE 2.x, board "Soldered Inkplate6" (= FQBN `Inkplate_Boards:esp32:Inkplate6V2`), partition scheme `min_spiffs`. **Library:** `Inkplate` (Soldered, 11.1.0). The firmware no longer uses ArduinoJson, and CI no longer installs it. The IDE bundles `arduino-cli` (`resources/app/lib/backend/resources/arduino-cli.exe` under the IDE's install folder), which compiles the sketch from a terminal.
 
-**Releases come from CI, not from your IDE** (see "OTA gotchas"). A USB flash is for bench tests only, and a bench build must set `#define OTA_SKIP 1` in the local `config.h`: otherwise the "dev" build replaces itself with the newest release on its first successful wake. `#define BENCH_MAX_SLEEP_S 60` caps each sleep so a bench session doesn't wait half an hour per wake. CI refuses to build if the `CONFIG_H` secret defines either. The checklist for the switch-over is [docs/thin-client-switchover.md](docs/thin-client-switchover.md).
+**Releases come from CI, not from your IDE** (see "OTA gotchas"). A USB flash is for bench tests only, and a bench build must set `#define OTA_SKIP 1` in the local `config.h`: otherwise the "dev" build replaces itself with the newest release on its first successful wake. `#define BENCH_MAX_SLEEP_S 60` caps each sleep so a bench session doesn't wait half an hour per wake. CI refuses to build if the `CONFIG_H` secret defines either. After a bench session, remove both from the local `config.h`; to put the device back on the newest release, USB-flash once without `OTA_SKIP`: the cold-boot check finds the release and the device updates itself on its first wake.
 
 **Server:** `cd server && python -m pytest` (on this laptop set `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`), `python -m screen.preview`, `python -m screen.service`. See [server/README.md](server/README.md).
 
@@ -142,7 +142,7 @@ These were discovered during integration spikes and are not derivable from the c
 - `winddirectiondegrees` is an integer (0–360); `winddirection` (Dutch cardinal string) is only the fallback.
 - `feeltemperature` is lowercase. Not used.
 
-**Open-Meteo:** `precipitation_hours` arrives as a JSON float (`12.0`). The firmware read it with ArduinoJson's `| 0`, which returns the default for anything not stored as an integer, so its "≥ 3 hours of precipitation means drizzle" rule never fired. The server reads the number. (Also found on 23 September 2026: the firmware's "Wet and windy" headline could never appear, because "Windy" always claimed the slot first.)
+**Open-Meteo:** a response is labelled with the UTC offset in effect *when asked* (`utc_offset_seconds`), even for hours after a DST switch, so those labels are an hour off. The server subtracts that offset and converts with `zoneinfo` (`sources.om_time`). The week row's icons come from the hourly values, judged on 07:00–21:00: [docs/weather-categories.md](docs/weather-categories.md). `precipitation_hours` arrives as a JSON float (`12.0`). The firmware read it with ArduinoJson's `| 0`, which returns the default for anything not stored as an integer, so its "≥ 3 hours of precipitation means drizzle" rule never fired. The server no longer uses it. (Also found on 23 September 2026: the firmware's "Wet and windy" headline could never appear, because "Windy" always claimed the slot first.)
 
 **Home network topology (as of 2026-07-26 router swap):**
 - **The TP-Link Deco is the access point; a DrayTek Vigor is the router.** The Deco runs in AP/bridge mode behind the DrayTek, which owns DHCP on `192.168.1.0/24` (pool `.10`–`.209`). **SSID, password, band and WPA mode never changed** in the swap — same Deco radios — so `secrets.h` was untouched. Any address reservation must be made on the DrayTek (`LAN` → `Bind IP to MAC`); reservations in the Deco app do nothing in AP mode.

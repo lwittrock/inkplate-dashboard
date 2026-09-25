@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .headline import greeting
 from .model import Category, Departure, DayForecast, Snapshot, Transfer, round_half_away
@@ -96,18 +96,76 @@ def _icon_font(px: int, weight: int) -> ImageFont.FreeTypeFont:
     return f
 
 
-def material_name(cat: Category, night: bool, sunny: bool) -> str:
+def material_name(cat: Category, night: bool) -> str:
     C = Category
     if cat == C.CLEAR:
         return "clear_night" if night else "sunny"
     if cat == C.PARTLY_CLOUDY:
         return "partly_cloudy_night" if night else "partly_cloudy_day"
-    if cat == C.SNOW:
-        return "sunny_snowing" if sunny else "weather_snowy"
     # One rain glyph: Material's light and heavy variants are bare streaks
     # without a cloud and break the set. The headline and the rain chart say how much.
+    # Sun and showers by day is drawn from two glyphs (_showers_mask); at night it is rain.
     return {C.OVERCAST: "cloud", C.FOG: "foggy", C.DRIZZLE: "rainy", C.RAIN: "rainy",
-            C.RAIN_HEAVY: "rainy", C.THUNDERSTORM: "thunderstorm"}.get(cat, "cloud")
+            C.RAIN_HEAVY: "rainy", C.SHOWERS: "rainy", C.SNOW: "weather_snowy",
+            C.THUNDERSTORM: "thunderstorm"}.get(cat, "cloud")
+
+
+# Sun and showers: Material Symbols has no sun-with-rain glyph, so the rain
+# cloud goes bottom left and a smaller, bolder sun top right, knocked out
+# around the cloud's silhouette plus a gap. Fractions of the icon's box.
+SHOWERS_CLOUD = (0.86, 0.38, 0.64)      # size, centre x, centre y
+SHOWERS_SUN = (0.64, 0.66, 0.30)
+SHOWERS_GAP = 0.13
+
+
+def _knock_out(sun: Image.Image, keepout: Image.Image) -> Image.Image:
+    """The sun minus the keepout. The disc (the largest piece) is cut into an
+    arc, but a ray the keepout touches goes whole: a sliver of one reads as a speck."""
+    labels = sun.point(lambda v: 255 if v >= 128 else 0)
+    px = labels.load()
+    pieces = []
+    for y in range(labels.height):
+        for x in range(labels.width):
+            if px[x, y] == 255:
+                pieces.append(len(pieces) + 1)
+                ImageDraw.floodfill(labels, (x, y), pieces[-1])
+    masks = [labels.point(lambda v, n=n: 255 if v == n else 0) for n in pieces]
+    disc = max(masks, key=lambda m: m.histogram()[255], default=None)
+    for m in masks:
+        if m is not disc and ImageChops.multiply(m, keepout).getbbox():
+            # Grown a little, so the anti-aliased fringe goes with it.
+            keepout = ImageChops.lighter(keepout, m.filter(ImageFilter.MaxFilter(5)))
+    return ImageChops.subtract(sun, keepout)
+
+
+@lru_cache(maxsize=None)
+def _showers_mask(px: int, em: int, weight: int, mono: bool) -> Image.Image:
+    """The icon as a mask for a px-square box, with a px // 4 margin on every
+    side (the sun's rays may reach past the box, as Material's own do)."""
+    pad = px // 4
+    size_px = px + 2 * pad
+
+    def glyph(name, part, wght):
+        size, cx, cy = part
+        m = Image.new("L", (size_px, size_px), 0)
+        d = ImageDraw.Draw(m)
+        d.fontmode = "1" if mono else "L"
+        d.text((pad + cx * px, pad + cy * px), _material_char(name),
+               font=_icon_font(round(em * size), wght), fill=255, anchor="mm")
+        return m
+
+    cloud = glyph("rainy", SHOWERS_CLOUD, weight)
+    # The sun's strokes are thinner at its smaller size; a heavier weight evens them out.
+    sun = glyph("sunny", SHOWERS_SUN, weight + 200)
+    # The silhouette is whatever a flood from the corner can't reach: the outline and its inside.
+    solid = cloud.point(lambda v: 255 if v >= 128 else 0)
+    ImageDraw.floodfill(solid, (size_px - 1, size_px - 1), 128)
+    silhouette = solid.point(lambda v: 0 if v == 128 else 255)
+    # Grown by the gap: blurred with half the gap as the standard deviation,
+    # then cut at 2 deviations out (a round dilation, where Pillow's filters are square).
+    keepout = silhouette.filter(ImageFilter.GaussianBlur(max(0.5, SHOWERS_GAP * px / 2)))
+    keepout = keepout.point(lambda v: 255 if v > 6 else 0)
+    return ImageChops.lighter(cloud, _knock_out(sun, keepout))
 
 
 @lru_cache(maxsize=None)
@@ -183,11 +241,16 @@ class Canvas:
     def polygon(self, pts, fill) -> None:
         self.d.polygon([(x * self.s, y * self.s) for x, y in pts], fill=fill)
 
-    def weather_icon(self, cat, x: int, y: int, box: int, night=False, sunny=False) -> None:
+    def weather_icon(self, cat, x: int, y: int, box: int, night=False) -> None:
         """A weather icon filling a box px square at (x, y); lighter at large sizes."""
-        f = _icon_font(round(box * 1.12 * self.s), 300 if box > 64 else 400)
+        em, weight = round(box * 1.12 * self.s), 300 if box > 64 else 400
+        if cat == Category.SHOWERS and not night:
+            mask = _showers_mask(box * self.s, em, weight, self.mono)
+            pad = (mask.width - box * self.s) // 2
+            self.img.paste(self.p.text, (x * self.s - pad, y * self.s - pad), mask)
+            return
         self.d.text(((x + box / 2) * self.s, (y + box / 2) * self.s),
-                    _material_char(material_name(cat, night, sunny)), font=f,
+                    _material_char(material_name(cat, night)), font=_icon_font(em, weight),
                     fill=self.p.text, anchor="mm")
 
     # --- finishing ---------------------------------------------------------------
@@ -449,7 +512,7 @@ def week(c: Canvas, fc: list[DayForecast]) -> None:
         today = i == 0
         c.text(cx, 332, d.day_name, 15.5, 700 if today else 500,
                fill=c.p.text if today else c.p.text2, anchor="ms")
-        c.weather_icon(d.category, round(cx - 24), 340, 48, sunny=d.sunny_variant)
+        c.weather_icon(d.category, round(cx - 24), 340, 48)
         c.text(cx, 416, temp_text(d.temp_max), 21, 650, anchor="ms")
         c.text(cx, 440, temp_text(d.temp_min), 16, 450, fill=c.p.text2, anchor="ms")
 

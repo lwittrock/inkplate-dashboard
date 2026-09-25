@@ -1,8 +1,8 @@
 # Design: the home server draws the screen
 
-Written 23 September 2026, from a planning session that followed
-[`homeserver-integration-handoff.md`](homeserver-integration-handoff.md). This is option D from
-that handoff, and it absorbs options A, B and C.
+Written 23 September 2026, from a planning session that weighed four ways to move the
+dashboard's work to the home server. This is option D, and it absorbs options A, B and C (the
+handoff that set them out, `docs/homeserver-integration-handoff.md`, is in git history).
 
 **What this document owns, and what it doesn't.** It owns **the contract** between device and
 service (kept current: change it here first) and **the reasons** for the design. It is otherwise
@@ -13,7 +13,6 @@ the record of the design as decided, not a manual:
 | How the server code works, running it on the laptop, how it deploys | [`server/README.md`](../server/README.md) |
 | The firmware, its rules and gotchas | [`CLAUDE.md`](../CLAUDE.md) |
 | Building and operating CT 106, the HA sensors, the checks | `runbooks/inkplate-screen.md` in the home-server repo |
-| Bench test and release of the thin client | [`thin-client-switchover.md`](thin-client-switchover.md) |
 | Battery figures, modelled and (later) measured | [`power-audit.md`](power-audit.md) |
 
 ## In one paragraph
@@ -196,8 +195,7 @@ client. Fewer dependencies means less that an automatic deploy pulls from PyPI.
 
   | Source | TTL | Notes |
   |---|---|---|
-  | Open-Meteo hourly | 15 min | |
-  | Open-Meteo daily | 6 h, or at the date change | As today |
+  | Open-Meteo (hourly and daily, 7 days) | 1 h | One request since 25 September 2026 (docs/weather-categories.md) |
   | Buienradar feed (now) | 10 min | Consensus vote as today |
   | Buienradar rain | 5 min | The nowcast is what makes freshness matter |
   | NS GVC→TBU | 5 min | |
@@ -378,14 +376,19 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    the phone.
 5. **Thin firmware.** On the `thin-client` branch: written and compiled 23 September 2026
    (1,113,605 bytes; the old firmware was 1,251,349). The bench test and
-   the release are a checklist of their own: [thin-client-switchover.md](thin-client-switchover.md).
+   the release had a checklist of their own (`docs/thin-client-switchover.md`, in git history).
    Two bench-only switches make it safe and quick, `OTA_SKIP` and `BENCH_MAX_SLEEP_S`; CI refuses
    to build a release with either. The `CONFIG_H` secret needs no change.
    *Done when:* the morning after the release, the wall shows the server's screen and HA shows
    telemetry.
-   **Released 24 September 2026** as `v2026.09.24-01`, after the bench session; how it went is at
-   the top of the checklist. The bench found one service bug (a battery at 5% or less crashed the
-   render), fixed the same evening.
+   **Released 24 September 2026** as `v2026.09.24-01`, after a bench session. The bench found one
+   service bug (a battery at 5% or less crashed the render, and the panel showed "Server down"
+   until the fix deployed and it recovered with a full refresh), fixed the same evening. On the
+   real panel, smooth greyscale was kept; `SMALL_TEXT=crisp` was tried and rejected; 1-bit was
+   seen but not decided, and stays a service setting to revisit on the wall.
+   **Still to prove: the OTA path itself.** The bench skipped the real OTA check, so the first
+   firmware release after this one proves it: the device should take it via the server's `X-Ota`
+   hint around 00:05, and HA's firmware sensor show the newer tag the next morning.
 6. **Clean up.** `CLAUDE.md` is rewritten for the thin client on the `thin-client` branch (the
    out-of-scope lines on remote logging and battery monitoring are changed there), and the handoff
    is marked superseded; `README.md` is rewritten with a map of which document owns which fact.

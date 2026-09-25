@@ -79,7 +79,7 @@ Refresh times and how long a failed source falls back to its last good copy: `PO
 ## Display Layout (800×600px), drawn by the server
 
 ```
-y=0    ┌─ MASTHEAD: greeting + date · sun/moon on its arc, sunrise/sunset times ─┐
+y=0    ┌─ MASTHEAD: greeting + date · HH:MM updated · sun/moon arc, rise/set ────┐
 y=92   ├─ rule (2 px) ──────────────────────────────────────────────────────────┤
 y=100  │ NOW: icon, temperature, feels like, wind │ NEXT 24 HOURS (night shaded)  │
        │                                          │ or RAIN, NEXT 2 HOURS         │
@@ -87,7 +87,7 @@ y=302  ├─ hairline ───────────────────
 y=312  │ 7 day columns: name, icon, high (big), low (small)                     │
 y=452  ├─ hairline ─────────────────────────────────────────────────────────────┤
 y=462  │ TRAINS → TILBURG UNI: 3 columns, status · time + platform · arrival    │
-y=580  └─ footer: updated HH:MM · battery ─────────────────────────────────────┘
+y=580  └─ footer: battery ─────────────────────────────────────────────────────┘
 ```
 
 All Y coordinates are absolute; the band comments at the top of `server/screen/render.py` are the layout contract. The design (September 2026): Inter as a variable TTF at any size, Material Symbols Rounded weather icons (subset by `server/tools/subset_icons.py`), greys for secondary information, no boxes. Drawn at 3× and downsampled for the greyscale mode; for 1-bit, text without anti-aliasing and grey fills as ordered dither. Text is never lighter than grey level 2 and never smaller than 13 px (e-ink greys are less even than a screen's). `python -m screen.preview` renders it on the laptop; `tools/mockups.py` shows grey, grey with crisp small text, and 1-bit side by side. The firmware's own drawing was first ported exactly and matched the wall pixel for pixel; that port is in git history (`c9a36d2`).

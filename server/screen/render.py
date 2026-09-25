@@ -6,14 +6,14 @@ icons, greys for everything secondary, and no boxes. (The exact port of the
 firmware's own drawing, which matched the wall pixel for pixel, is in git
 history: server/screen/render.py at commit c9a36d2.)
 
-    y=0    masthead: greeting, date, sun or moon arc
+    y=0    masthead: greeting, date and update time, sun or moon arc
     y=92   rule
     y=100  NOW (icon, temperature, feels like, wind) | the next 24 h or the rain
     y=302  hairline
     y=312  the week: day, icon, high, low
     y=452  hairline
     y=462  TRAINS → TILBURG UNI: three columns, no boxes
-    y=580  footer: when it was drawn, battery
+    y=580  footer: battery
 
 Drawn once in 8-bit grey at SCALE times the size, then finished for either
 panel mode:
@@ -283,7 +283,9 @@ def masthead(c: Canvas, snap: Snapshot, night: bool) -> None:
     now, fc = snap.now, snap.forecast
     current = snap.weather.category if snap.weather else None
     c.text(LEFT, 50, greeting(now, fc[0] if fc else None, current), 34, 650)
-    c.text(LEFT + 1, 77, f"{now.day} {MONTHS[now.month - 1]}", 16, 420, fill=c.p.text2)
+    # When it was drawn, where the eye already is: a frozen screen must be obvious.
+    c.text(LEFT + 1, 77, f"{now.day} {MONTHS[now.month - 1]}  ·  {now:%H:%M}", 16, 420,
+           fill=c.p.text2)
 
     c.rect(LEFT, 91, RIGHT, 93, c.p.text)
 
@@ -570,7 +572,6 @@ def train(c: Canvas, x: float, right: float, d: Departure) -> None:
 # --- footer (y=580-596) --------------------------------------------------------------------
 
 def footer(c: Canvas, snap: Snapshot) -> None:
-    c.text(LEFT, 594, f"Updated {snap.now:%H:%M}", 13, 450, fill=c.p.text3)
     pct = battery_percent(snap.battery_v)
     bx, by, bw, bh = RIGHT - 28, 583, 25, 12
     c.rect(bx, by, bx + bw, by + bh, c.p.text, radius=2.5)

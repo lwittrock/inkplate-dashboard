@@ -339,10 +339,19 @@ also because LiPo self-discharge starts to count at this low draw.
 real per-wake times, and the battery voltage in HA gives the real discharge curve. Recompute this
 table from them and record the outcome in `power-audit.md`.
 
+**First readings, night of 24 to 25 September 2026** (one night, not final): `wifi_ms` 556 to
+600 ms; `awake_ms` about 2,400 ms on a wake that draws, about 700 ms on the 00:05 wake that does
+not, so the greyscale refresh is about 1.7 s, with the radio off at 80 MHz. With assumed currents
+(about 110 mA radio on, 30 to 50 mA after) that is roughly 0.045 mAh per wake, half the model's
+0.09, and about 3 mAh a day with sleep. The currents are guesses; only the times are measured. If
+it holds, a full discharge takes well over the model's 4 to 6 months. Spikes to 3 and 5 s in the
+first evening came during setup and were not followed up.
+
 **Next lever, after measuring:** Wi-Fi connect becomes the largest cost. Keeping the access
 point's BSSID and channel in RTC and passing them to `WiFi.begin()` skips the scan (reported
 elsewhere as 3 s down to under 1 s), with a normal connect as fallback. Do it only if `wifi_ms`
-shows it is worth it.
+shows it is worth it. The first readings say probably not: connect is already about 0.56 s, so
+skipping the scan saves a few tenths of a second at most.
 
 ## Steps
 
@@ -394,13 +403,18 @@ Each step has a "Done when". Commands on the server are Lars's to run, one at a 
    is marked superseded; `README.md` is rewritten with a map of which document owns which fact.
    Left for then: a status note in `power-audit.md` with the measured figures. In the home-server repo: `reference.md` (CT 106, secrets, checks),
    the new runbook, `runbooks/home-assistant.md`, `decisions.md`, `plan.md`.
-7. **After a week or two of data:** recompute the battery table, then decide on the fast Wi-Fi
-   reconnect and on the cadence. The battery gauge waits for the same data (decided 24 September
+7. **After two or three weeks of data:** recompute the battery table from `awake_ms`, `wifi_ms`
+   and the slope of the voltage (the first readings above suggest a full discharge takes months,
+   so the slope is the realistic source of mAh a day), then decide on the fast Wi-Fi reconnect and
+   on the cadence. HA keeps raw readings 10 days by default, but hourly mean, min and max forever
+   (the sensors have `state_class: measurement`), which is enough for this.
+   The battery gauge waits for a full discharge, whenever that comes (decided 24 September
    2026): `_LIPO` in `telemetry.py` is a generic single-cell curve, off by perhaps 5 to 10 points,
    and each wake reports one ADC sample, where 20 mV of noise moves the flat middle of the curve
-   by about 10 points. With one full discharge in HA's voltage sensor: fit the table to this cell,
-   smooth the reading over the last few reports, and consider showing days left instead of a
-   percentage. All server-side; the low-battery warning at 15% uses the same table. Until then
+   by about 10 points. At the top it reads low: after a full charge this cell rests at 4.15 to
+   4.17 V, which the table calls 95 to 97% (seen 25 September 2026). With one full discharge in
+   HA's voltage sensor: fit the table to this cell, smooth the reading over the last few reports,
+   and consider showing days left instead of a percentage. All server-side; the low-battery warning at 15% uses the same table. Until then
    the footer draws the icon without a number.
 
 ## Later, deliberately not now

@@ -25,7 +25,8 @@ is like.**
 
 ## The rules
 
-**NOW** keeps showing the weather now, from the Buienradar stations.
+**NOW** keeps showing the weather now, from the Buienradar stations, with one
+correction for sunshine (below, "NOW: sun through high cloud").
 
 **Each day of the week row, Today included,** is judged on the whole window
 07:00-21:00. Open-Meteo's hourly rain and sunshine are for the hour *before* the
@@ -80,6 +81,46 @@ sneeuwval) snow, was missing; `j` (opklaringen en hoge bewolking) partly
 cloudy, not clear (as Home Assistant / python-buienradar do). `w` (regen en
 winterse neerslag) stays snow. No code means heavy rain any more. Codes not seen
 before are logged once, with the feed's `weatherdescription`, and shown as overcast.
+
+## NOW: sun through high cloud
+
+Added 25 September 2026, on trial for a week. Buienradar's icon follows total
+cloud cover and ignores sunshine, so a veil of high cloud reads "zwaar bewolkt"
+while the sun shines through it. That morning at 08:50, Rotterdam and Hoek van
+Holland said `c` (Voorschoten `b`), so the vote said overcast under a mostly
+blue sky; De Bilt said `c` while measuring 90% of a clear sky's sunshine, and
+KNMI's model had 91% cloud, all of it high, with full sunshine.
+
+**The rule** (`weather.pick_current`): an overcast vote shows **partly cloudy**
+when all three hold:
+- the sun is at least `MIN_SUN_ELEVATION` = 10 degrees up (lower, measured
+  sunshine says little);
+- the model's hour gives at least `MODEL_SUN_S` = 45 minutes of sun;
+- the voting stations' median `sunpower` is at least `SUN_THROUGH` = 40% of a
+  clear sky's (Haurwitz's model at the sun's height, `clear_sky_wm2`).
+
+It never darkens a clear vote, and rain, snow, fog and thunder stay the
+stations' call. The three numbers come from one morning: near the coast, at
+11 degrees, a mostly blue sky measured 42-49% of the model's clear sky.
+
+**What is logged**, one line per render (every 5 minutes) with everything
+needed to re-judge it:
+
+    now: partly_cloudy (vote overcast; sun 15.5 deg up, clear sky 236 W;
+    model 60 min sun, cloud 5% (low 0, mid 0, high 5); voting: Voorschoten
+    9 km b 104 W 44%, Rotterdam 17 km c 78 W 33%, Hoek van Holland 18 km c
+    123 W 52%; beyond 30 km: Schiphol 40 km b 113 W 48%, ...)
+
+On CT 106: `journalctl -u inkplate-screen --since 2026-09-25 | grep "now:"`.
+The journal must survive reboots for this (`journalctl --list-boots` lists more
+than one boot).
+
+**Re-evaluate around 2 October 2026**: compare the week's lines with KNMI's
+measured hours for Voorschoten (215), Rotterdam (344) and Hoek van Holland
+(330) at `daggegevens.knmi.nl/klimatologie/uurgegevens` (SQ sunshine, N
+cloud), plus any moments the wall looked wrong. Questions: where does
+`SUN_THROUGH` separate sunny hours from grey ones, does 10 degrees hold, and
+does the model's high-cloud share help (it is logged, not used)?
 
 ## Data
 

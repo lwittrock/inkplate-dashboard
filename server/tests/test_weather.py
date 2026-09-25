@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta
 
 import pytest
@@ -5,7 +6,8 @@ import pytest
 from screen.headline import DAYS, greeting
 from screen.model import Category, DayForecast, HourForecast, Station
 from screen.render import Canvas
-from screen.weather import DayCounts, category_from_icon, count_day, day_category, hour_sky, pick_current
+from screen.weather import (DayCounts, category_from_icon, clear_sky_wm2, count_day, day_category, hour_sky,
+                            pick_current, sun_elevation)
 
 HOME = (52.0799, 4.3133)
 NOW = datetime(2026, 9, 23, 14, 0)
@@ -142,6 +144,82 @@ def test_stale_stations_are_skipped():
 def test_no_station_in_range_falls_back_to_the_nearest():
     w = pick([station("Far", 53.2, 5.8, "q", temp=9.0), station("Farther", 53.4, 6.2, "a")])
     assert (w.category, w.temp) == (Category.RAIN, 9.0)
+
+
+def test_sun_elevation_and_clear_sky():
+    # 23 September 2026, the equinox: the sun peaks about 37.7 degrees up at
+    # Delft around 13:35. Open-Meteo's sunrise (07:30 that day, 08:50 on
+    # 4 January) is the upper limb at the horizon, refraction included:
+    # -0.83 degrees geometrically.
+    assert sun_elevation(*HOME, datetime(2026, 9, 23, 13, 35)) == pytest.approx(37.7, abs=0.6)
+    assert sun_elevation(*HOME, datetime(2026, 9, 23, 7, 30)) == pytest.approx(-0.83, abs=0.6)
+    assert sun_elevation(*HOME, datetime(2026, 1, 4, 8, 50)) == pytest.approx(-0.83, abs=0.6)
+    assert clear_sky_wm2(-1.0) == 0.0
+    assert 550 < clear_sky_wm2(37.6) < 650
+
+
+def at_share(s: Station, share: float, when=NOW) -> Station:
+    """The station measuring `share` of a clear sky's sunshine."""
+    s.sun_wm2 = share * clear_sky_wm2(sun_elevation(*HOME, when))
+    return s
+
+
+def overcast_vote(*shares, when=NOW):
+    """Voorschoten says mixed, Rotterdam and Hoek van Holland heavy cloud: the vote is overcast."""
+    seen = when - timedelta(minutes=10)
+    return [at_share(station(n, lat, lon, code, observed=seen), sh, when)
+            for (n, lat, lon, code), sh in zip(
+                [("Voorschoten", 52.12, 4.43, "b"), ("Rotterdam", 51.95, 4.45, "c"),
+                 ("Hoek van Holland", 51.98, 4.12, "c")], shares)]
+
+
+def model_hour(sun_min, when=NOW):
+    return HourForecast(time=when.replace(minute=0) + timedelta(hours=1), temp=15.0, code=3,
+                        precip_mm=0.0, snow_cm=0.0, sun_s=sun_min * 60, cloud_pct=91.0, cloud_high_pct=91.0)
+
+
+def sky_now(stations, hour, when=NOW):
+    return pick_current(stations, when, *HOME, stale_min=60, consensus_km=30, max_candidates=6,
+                        hour=hour).category
+
+
+def test_sun_through_high_cloud_turns_an_overcast_vote_partly_cloudy():
+    # 25 September 2026: "zwaar bewolkt" at two of three stations, a veil of
+    # high cloud, the sun getting through; the median share (45%) decides.
+    assert sky_now(overcast_vote(0.45, 0.30, 0.60), model_hour(60)) == Category.PARTLY_CLOUDY
+
+
+@pytest.mark.parametrize("stations, hour, when", [
+    (overcast_vote(0.35, 0.35, 0.35), model_hour(60), NOW),              # the stations see too little sun
+    (overcast_vote(0.60, 0.60, 0.60), model_hour(40), NOW),              # the model has too little
+    (overcast_vote(0.60, 0.60, 0.60), None, NOW),                        # no forecast
+    (overcast_vote(0.90, 0.90, 0.90, when=NOW.replace(hour=8, minute=10)),   # the sun 5 degrees up
+     model_hour(60, NOW.replace(hour=8)), NOW.replace(hour=8, minute=10)),
+])
+def test_an_overcast_vote_stays_overcast_unless_both_see_sun(stations, hour, when):
+    assert sky_now(stations, hour, when) == Category.OVERCAST
+
+
+def test_without_sunshine_sensors_the_vote_stands():
+    stations = overcast_vote(0.6, 0.6, 0.6)
+    for s in stations:
+        s.sun_wm2 = None
+    assert sky_now(stations, model_hour(60)) == Category.OVERCAST
+
+
+def test_sunshine_never_darkens_the_vote():
+    clear = [at_share(station("A", 52.09, 4.32, "a"), 0.05), at_share(station("B", 52.1, 4.35, "a"), 0.05)]
+    assert sky_now(clear, model_hour(0)) == Category.CLEAR
+
+
+def test_every_choice_is_logged_with_its_numbers(caplog):
+    with caplog.at_level(logging.INFO, logger="screen.weather"):
+        sky_now(overcast_vote(0.45, 0.30, 0.60) + [station("Schiphol", 52.30, 4.77, "a")], model_hour(60))
+    line = caplog.messages[-1]
+    assert line.startswith("now: partly_cloudy (vote overcast; sun ")
+    assert "model 60 min sun, cloud 91% (low 0, mid 0, high 91)" in line
+    assert "voting: Voorschoten 9 km b " in line and " 45%, Rotterdam 17 km c " in line
+    assert line.endswith("beyond 30 km: Schiphol 40 km a)")
 
 
 def forecast(cat=Category.CLEAR, tmax=20, feels=20, wind=10.0, gust=20.0, uv=4.0):

@@ -31,7 +31,8 @@ NS_TRIPS_URL = "https://gateway.apiportal.ns.nl/reisinformatie-api/api/v3/trips"
 
 DAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]  # not %a: that follows the locale
 
-HOURLY_FIELDS = "temperature_2m,weather_code,precipitation,snowfall,sunshine_duration,cloud_cover"
+HOURLY_FIELDS = ("temperature_2m,weather_code,precipitation,snowfall,sunshine_duration,cloud_cover,"
+                 "cloud_cover_low,cloud_cover_mid,cloud_cover_high")
 # What the greeting and the masthead still take from the daily values.
 DAILY_FIELDS = (
     "temperature_2m_max,temperature_2m_min,sunrise,sunset,"
@@ -125,12 +126,14 @@ def parse_om(doc: dict) -> Forecast | None:
     times = hourly.get("time") if isinstance(hourly.get("time"), list) else []
     n = len(times)
     hours = [HourForecast(time=t, temp=num(temp), code=int(num(code)), precip_mm=num(mm),
-                          snow_cm=num(snow), sun_s=num(sun), cloud_pct=num(cloud))
-             for t, temp, code, mm, snow, sun, cloud in zip(
+                          snow_cm=num(snow), sun_s=num(sun), cloud_pct=num(cloud),
+                          cloud_low_pct=num(low), cloud_mid_pct=num(mid), cloud_high_pct=num(high))
+             for t, temp, code, mm, snow, sun, cloud, low, mid, high in zip(
                  (om_time(v, offset) for v in times), col(hourly, "temperature_2m", n),
                  col(hourly, "weather_code", n), col(hourly, "precipitation", n),
                  col(hourly, "snowfall", n), col(hourly, "sunshine_duration", n),
-                 col(hourly, "cloud_cover", n))
+                 col(hourly, "cloud_cover", n), col(hourly, "cloud_cover_low", n),
+                 col(hourly, "cloud_cover_mid", n), col(hourly, "cloud_cover_high", n))
              if t is not None]
 
     n = len(daily.get("time")) if isinstance(daily.get("time"), list) else 0
@@ -211,6 +214,7 @@ def parse_br_stations(doc: dict) -> list[Station]:
             bearing=int(bearing),
             feels=num(s.get("feeltemperature"), None),
             gust_ms=num(s.get("windgusts"), None),
+            sun_wm2=num(s.get("sunpower"), None),
         ))
     return out
 

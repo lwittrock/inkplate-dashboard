@@ -5,11 +5,18 @@ explains why the vote exists and its known caveats. docs/weather-categories.md
 explains the daily rules and the data behind their thresholds.
 """
 
+import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from statistics import median
+from zoneinfo import ZoneInfo
 
 from .model import Category, HourForecast, Station, WeatherNow
+
+log = logging.getLogger(__name__)
+
+TZ = ZoneInfo("Europe/Amsterdam")
 
 # A day is judged on 07:00-21:00. Hourly sums cover the hour before their
 # timestamp, so that is the hours stamped 08:00 to 21:00.
@@ -135,14 +142,49 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 6371.0 * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+# NOW's sky. Buienradar's icon follows total cloud cover and ignores the sun,
+# so a veil of high cloud reads "zwaar bewolkt" while the sun shines through
+# it (docs/weather-categories.md, "NOW"). An overcast vote shows partly cloudy
+# when the model and the stations both say the sun is getting through.
+# From one morning's data; to be checked against a week of logs.
+MIN_SUN_ELEVATION = 10.0    # degrees: lower, measured sunshine says little
+MODEL_SUN_S = 45 * 60       # the model's sunshine in this hour
+SUN_THROUGH = 0.40          # the voters' median sunshine, as a share of a clear sky's
+
+
+def sun_elevation(lat: float, lon: float, when: datetime) -> float:
+    """Degrees above the horizon at a naive local time: NOAA's approximation,
+    within about half a degree (plenty for MIN_SUN_ELEVATION)."""
+    t = when.replace(tzinfo=TZ).astimezone(timezone.utc)
+    g = 2 * math.pi / 365 * (t.timetuple().tm_yday - 1 + (t.hour - 12) / 24)
+    decl = (0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g) - 0.006758 * math.cos(2 * g)
+            + 0.000907 * math.sin(2 * g) - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g))
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g)
+                       - 0.014615 * math.cos(2 * g) - 0.040849 * math.sin(2 * g))
+    hour_angle = math.radians((t.hour * 60 + t.minute + t.second / 60 + eqtime + 4 * lon) / 4 - 180)
+    la = math.radians(lat)
+    return math.degrees(math.asin(math.sin(la) * math.sin(decl)
+                                  + math.cos(la) * math.cos(decl) * math.cos(hour_angle)))
+
+
+def clear_sky_wm2(elevation: float) -> float:
+    """Sunshine on a clear day at this sun height, W/m2 (Haurwitz's model)."""
+    s = math.sin(math.radians(elevation))
+    return 1098 * s * math.exp(-0.057 / s) if s > 0 else 0.0
+
+
 def pick_current(stations: list[Station], now: datetime, lat: float, lon: float, *,
-                 stale_min: int, consensus_km: float, max_candidates: int) -> WeatherNow | None:
+                 stale_min: int, consensus_km: float, max_candidates: int,
+                 hour: HourForecast | None = None) -> WeatherNow | None:
     """Current conditions from the nearest Buienradar stations.
 
     Take the nearest `max_candidates` fresh stations, vote on the weather
     category among those within `consensus_km` (a tie goes to the closest),
     and read temperature and wind from the closest station that voted for
     the winner. One station with a faulty sensor can't set the icon alone.
+    An overcast vote becomes partly cloudy when the sun gets through (see
+    above); `hour` is the forecast hour now falls in. Every choice is logged
+    with the numbers behind it.
     """
     fresh = [s for s in stations
              if s.observed is None or (now - s.observed).total_seconds() <= stale_min * 60]
@@ -163,5 +205,36 @@ def pick_current(stations: list[Station], now: datetime, lat: float, lon: float,
     else:
         cat, src = candidates[0]
 
-    return WeatherNow(temp=src.temp, wind_kmh=src.wind_ms * 3.6, category=cat, wind_bearing=src.bearing,
+    elevation = sun_elevation(lat, lon, now)
+    clear = clear_sky_wm2(elevation)
+
+    def share(s: Station) -> float | None:
+        return s.sun_wm2 / clear if s.sun_wm2 is not None and clear > 0 else None
+
+    voters = [s for _, s in in_range] or [src]
+    shares = [share(s) for s in voters if share(s) is not None]
+    sun_through = (elevation >= MIN_SUN_ELEVATION and hour is not None and hour.sun_s >= MODEL_SUN_S
+                   and bool(shares) and median(shares) >= SUN_THROUGH)
+    shown = Category.PARTLY_CLOUDY if cat == Category.OVERCAST and sun_through else cat
+    _log_now(shown, cat, elevation, clear, hour, by_distance[:max_candidates], consensus_km, share)
+
+    return WeatherNow(temp=src.temp, wind_kmh=src.wind_ms * 3.6, category=shown, wind_bearing=src.bearing,
                       feels=src.feels, gust_kmh=src.gust_ms * 3.6 if src.gust_ms is not None else None)
+
+
+def _log_now(shown, vote, elevation, clear, hour, nearest, consensus_km, share) -> None:
+    """One line per choice, with everything needed to re-judge it later
+    against KNMI's measured hours."""
+    def station(d: float, s: Station) -> str:
+        sun = "" if s.sun_wm2 is None else f" {s.sun_wm2:.0f} W"
+        if share(s) is not None:
+            sun += f" {share(s):.0%}"
+        return f"{s.name.removeprefix('Meetstation ')} {d:.0f} km {s.icon_code}{sun}"
+
+    model = ("no model hour" if hour is None else
+             f"model {hour.sun_s / 60:.0f} min sun, cloud {hour.cloud_pct:.0f}% (low "
+             f"{hour.cloud_low_pct:.0f}, mid {hour.cloud_mid_pct:.0f}, high {hour.cloud_high_pct:.0f})")
+    near = ", ".join(station(d, s) for d, s in nearest if d <= consensus_km) or "none"
+    far = ", ".join(station(d, s) for d, s in nearest if d > consensus_km) or "none"
+    log.info("now: %s (vote %s; sun %.1f deg up, clear sky %.0f W; %s; voting: %s; beyond %g km: %s)",
+             shown.name.lower(), vote.name.lower(), elevation, clear, model, near, consensus_km, far)

@@ -14,7 +14,7 @@ from typing import Any
 
 from . import sources, trains
 from .config import Settings
-from .model import DayForecast, Forecast, Snapshot
+from .model import DayForecast, Forecast, HourForecast, Snapshot
 from .weather import pick_current
 
 log = logging.getLogger(__name__)
@@ -37,6 +37,12 @@ def hours_ahead(om: Forecast, now: datetime) -> list[float]:
     if start is None or om.hours[start].time != top:
         return []
     return [h.temp for h in om.hours[start:start + 24]]
+
+
+def hour_now(om: Forecast, now: datetime) -> HourForecast | None:
+    """The forecast hour `now` falls in: its sums are stamped at the hour's end."""
+    end = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return next((h for h in om.hours if h.time == end), None)
 
 
 def week_ahead(om: Forecast, now: datetime) -> list[DayForecast]:
@@ -94,7 +100,8 @@ class Collector:
                 stations, now, s.latitude, s.longitude,
                 stale_min=s.buienradar_stale_min,
                 consensus_km=s.buienradar_consensus_km,
-                max_candidates=s.buienradar_max_candidates)
+                max_candidates=s.buienradar_max_candidates,
+                hour=hour_now(om, now) if om else None)
 
         snap.rain = self._get("br_rain", now) or []
 

@@ -79,6 +79,9 @@ class HourForecast:
     snow_cm: float
     sun_s: float
     cloud_pct: float
+    cloud_low_pct: float = 0.0          # the layers, logged with NOW's choice
+    cloud_mid_pct: float = 0.0
+    cloud_high_pct: float = 0.0
 
 
 @dataclass
@@ -101,6 +104,7 @@ class Station:
     bearing: int                # degrees the wind comes from
     feels: float | None = None
     gust_ms: float | None = None
+    sun_wm2: float | None = None        # measured sunshine ("sunpower"); None without a sensor
 
 
 @dataclass

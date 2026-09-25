@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from screen.collect import Collector, hours_ahead, week_ahead
+from screen.collect import Collector, hour_now, hours_ahead, week_ahead
 from screen.config import Settings
 from screen.model import Category, Transfer
 from screen.sources import (FixtureFetcher, icon_code_from_url, local_time, parse_br_rain,
@@ -139,6 +139,10 @@ def test_the_chart_and_the_week_are_cut_from_one_list_at_any_age():
     assert temps[0] == 22.0 and len(temps) == 24
     assert len(hours_ahead(om, datetime(2026, 9, 24, 3, 10))) == 21       # what is left
     assert hours_ahead(om, datetime(2026, 9, 25, 0, 5)) == []
+
+    # NOW's model hour is the one now falls in, stamped at its end.
+    assert hour_now(om, datetime(2026, 9, 23, 22, 40)).time == datetime(2026, 9, 23, 23, 0)
+    assert hour_now(om, datetime(2026, 9, 25, 9, 0)) is None
 
     # Just after midnight with yesterday's list: the week starts today, with one day fewer.
     week = week_ahead(om, datetime(2026, 9, 24, 0, 20))

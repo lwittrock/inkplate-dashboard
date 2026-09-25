@@ -2,14 +2,14 @@
 
 An e-paper dashboard for my commute: current weather, a 2-hour rain chart or 24-hour temperature
 curve, the week ahead, and the next three trains from Den Haag to Tilburg Universiteit, in a
-newspaper-style 1-bit layout on an Inkplate 6 behind glass on the wall.
+newspaper-style layout on an Inkplate 6 behind glass on the wall.
 
 Personal hobby project, shared in case it's useful as a reference. Not actively supporting forks;
 if you want to adapt it to your city or route, expect to read the code.
 
-> **Status: server-rendered since the thin client's release** (Phase 10.4, checklist in
-> [docs/thin-client-switchover.md](docs/thin-client-switchover.md)). The previous self-contained
-> firmware, which fetched and drew everything itself, is in the git history before that merge.
+> **Status: server-rendered since the thin client's release** (Phase 10.4, `v2026.09.24-01`,
+> 24 September 2026). The previous self-contained firmware, which fetched and drew everything
+> itself, is in the git history before that merge.
 
 ---
 
@@ -42,7 +42,8 @@ contract and the battery figures are in
   conditions come from a vote among nearby KNMI stations, so one faulty sensor can't set the icon.
 - **Right of the weather**: a 2-hour rain chart when rain is coming, else a 24-hour temperature
   curve with sunrise and sunset marked.
-- **Week strip**: seven days, each with an icon and a min/max range bar.
+- **Week strip**: seven days, each with an icon for what most of the day is like (judged on
+  07:00-21:00), the high and the low.
 - **Trains**: three cards from Den Haag Centraal to Tilburg Universiteit, with platform, delay,
   the transfer at Breda and the arrival time. When a Centraal train is cancelled or badly late, a
   clean alternative from Den Haag HS takes its card, marked with a black "DH HS" pill.
@@ -62,10 +63,9 @@ Each fact has one home; the others point to it.
 | Why this design, and **the contract** between device and server | [docs/server-rendering-design.md](docs/server-rendering-design.md) |
 | The server code: layout, running it, testing, how it deploys | [server/README.md](server/README.md) |
 | The firmware: rules, OTA, CI, and the gotchas that cost time | [CLAUDE.md](CLAUDE.md) |
-| The one-off bench test and release of the thin client | [docs/thin-client-switchover.md](docs/thin-client-switchover.md) |
+| How the week's weather icons are chosen, and the data behind the rules | [docs/weather-categories.md](docs/weather-categories.md) |
 | Battery figures | [docs/power-audit.md](docs/power-audit.md) |
 | The home server side: the container, its firewall, the Home Assistant sensors, the checks | the private home-server docs repo, `runbooks/inkplate-screen.md` |
-| How the choice was made (historical) | [docs/homeserver-integration-handoff.md](docs/homeserver-integration-handoff.md) |
 
 ---
 

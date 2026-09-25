@@ -117,3 +117,14 @@ the self-test never goes live. The firmware's CI ignores `server/`.
 cannot change how deploys work. After editing them here, copy them again.
 The build and operation of CT 106 are in the home-server repo,
 `runbooks/inkplate-screen.md`.
+
+### When the wall looks wrong
+
+- **"Server down" on the panel**: CT 106 or its service is down (`pct exec 106 -- systemctl
+  status inkplate-screen`). The device retries and recovers by itself, with a full refresh.
+- **"No Wi-Fi"**: the router or the Deco.
+- **An old dashboard, and HA's `last seen` stopped**: the device is dead, flat, or stuck; the
+  `inkplate` check alerts by 08:00 at the latest. USB is the way in.
+- **A bad firmware release**: after three wakes without Wi-Fi the device rolls back to the
+  previous slot by itself. A release that reaches Wi-Fi but breaks the server request is replaced
+  by the next one: the device checks for updates on its second failed wake and every 12 hours after.

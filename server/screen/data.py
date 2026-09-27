@@ -13,12 +13,15 @@ design; this is only what it was drawn from.
   Its category judges that hour alone (weather.hour_category), so it is never
   "showers"; `daylight` is false at night, where HA shows clear as clear-night.
 - Rain times are Buienradar's own "HH:MM" labels, for showing, not computing.
+  `rain_expected` and `rain_summary` are the wall's own judgment of them
+  (weather.rain_summary): whether it draws the rain chart, and its words.
 """
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .model import Category, Departure, Snapshot
+from .weather import rain_expected, rain_summary
 
 TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -60,6 +63,8 @@ def snapshot_data(snap: Snapshot) -> dict:
                 "wind_bearing": w.wind_bearing, "category": _category(w.category),
             },
             "rain": [{"time": r.label, "mmh": round(r.mmh, 2)} for r in snap.rain],
+            "rain_expected": rain_expected(snap.rain),
+            "rain_summary": rain_summary(snap.rain) if snap.rain else None,
             "hours": [{"at": stamp(h.time), "temp": _one(h.temp), "precip_mm": round(h.precip_mm, 1),
                        "snow_cm": round(h.snow_cm, 1), "sun_min": round(h.sun_s / 60),
                        "cloud_pct": round(h.cloud_pct), "category": _category(h.category),

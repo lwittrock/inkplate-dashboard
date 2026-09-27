@@ -5,10 +5,11 @@ from datetime import datetime, timedelta
 import pytest
 
 from screen.headline import DAYS, greeting
-from screen.model import Category, DayForecast, HourForecast, Station
+from screen.model import Category, DayForecast, HourForecast, RainSample, Station
 from screen.render import Canvas
 from screen.weather import (DayCounts, category_from_icon, clear_sky_wm2, count_day, day_category,
-                            hour_category, hour_sky, pick_current, sun_elevation)
+                            hour_category, hour_sky, pick_current, rain_expected, rain_summary,
+                            sun_elevation)
 
 HOME = (52.0799, 4.3133)
 NOW = datetime(2026, 9, 23, 14, 0)
@@ -68,6 +69,17 @@ def test_at_night_cloud_alone_decides_the_sky():
 ])
 def test_an_hour_is_judged_in_the_day_rules_order(kw, daylight, cat):
     assert hour_category(hour(datetime(2026, 9, 29, 12), **kw), daylight) == cat
+
+
+@pytest.mark.parametrize("mmh, words, expected", [
+    ([0, 0, 0.39, 0], "dry for two hours", False),                 # below 0.4 is not rain
+    ([0, 0.4, 1.2, 0], "rain from 14:10", True),
+    ([0.8, 0.5, 0, 0], "raining, until 14:15", True),
+    ([2.0, 2.0, 2.0, 2.0], "raining for two hours", True),
+])
+def test_the_rain_in_words_as_the_wall_writes_it(mmh, words, expected):
+    rain = [RainSample(v, f"14:{5 + 5 * i:02d}") for i, v in enumerate(mmh)]
+    assert (rain_summary(rain), rain_expected(rain)) == (words, expected)
 
 
 def sky(clear=0, partly=0, overcast=0, **kw):

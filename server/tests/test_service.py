@@ -150,6 +150,7 @@ def test_data_serves_the_last_render_with_offsets(svc):
     assert {x["category"] for x in w["hours"]} <= {c.name.lower() for c in Category} - {"showers"}
     assert w["hours"][0]["daylight"] is False and any(x["daylight"] for x in w["hours"])
     assert all(r["time"][2] == ":" for r in w["rain"])
+    assert (w["rain_expected"], w["rain_summary"]) == (False, "dry for two hours")
 
     service.snapshot = None
     assert get("/data")[0] == 503

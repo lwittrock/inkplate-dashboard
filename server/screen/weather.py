@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import median
 from zoneinfo import ZoneInfo
 
-from .model import Category, HourForecast, NowChoice, Station, StationReading, WeatherNow
+from .model import Category, HourForecast, NowChoice, RainSample, Station, StationReading, WeatherNow
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +97,27 @@ def count_day(hours: list[HourForecast], sunrise: datetime, sunset: datetime) ->
         thunder=sum(map(is_thunder, window)),
         **sky,
     )
+
+
+# The radar's next 2 hours: from this many mm/h the wall draws the rain instead
+# of the 24 hours, and the words below call it rain. /data passes both on.
+RAIN_SHOWN_MMH = 0.4
+
+
+def rain_expected(rain: list[RainSample]) -> bool:
+    return any(s.mmh >= RAIN_SHOWN_MMH for s in rain)
+
+
+def rain_summary(rain: list[RainSample]) -> str:
+    """The next 2 hours in words, as the wall writes them above its chart."""
+    wet = [s.mmh >= RAIN_SHOWN_MMH for s in rain]
+    if not any(wet):
+        return "dry for two hours"
+    first = wet.index(True)
+    if first > 0:
+        return f"rain from {rain[first].label}"
+    stop = next((i for i, w in enumerate(wet) if not w), None)
+    return f"raining, until {rain[stop].label}" if stop else "raining for two hours"
 
 
 # An hour's rain by its amount: the usual intensity bounds, in mm in the hour.

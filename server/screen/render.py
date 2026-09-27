@@ -33,6 +33,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 from .headline import greeting
 from .model import Category, Departure, DayForecast, Snapshot, Transfer, round_half_away
 from .telemetry import battery_percent
+from .weather import rain_expected, rain_summary
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 
@@ -473,27 +474,15 @@ def rain_chart(c: Canvas, snap: Snapshot) -> None:
             c.text(x, 280, s.label, 13, 450, fill=c.p.text2, anchor="ms")
 
 
-def rain_summary(snap: Snapshot) -> str:
-    wet = [s.mmh >= 0.4 for s in snap.rain]
-    if not any(wet):
-        return "dry for two hours"
-    first = wet.index(True)
-    if first > 0:
-        return f"rain from {snap.rain[first].label}"
-    stop = next((i for i, w in enumerate(wet) if not w), None)
-    return f"raining, until {snap.rain[stop].label}" if stop else "raining for two hours"
-
-
 def outlook(c: Canvas, snap: Snapshot) -> None:
-    raining = any(s.mmh >= 0.4 for s in snap.rain)
-    if raining:
+    if rain_expected(snap.rain):
         c.caps(X0, 120, "RAIN, NEXT 2 HOURS")
-        c.text(X1, 120, rain_summary(snap), 13.5, 600, anchor="rs")
+        c.text(X1, 120, rain_summary(snap.rain), 13.5, 600, anchor="rs")
         rain_chart(c, snap)
     elif len(snap.hourly) >= 2:
         c.caps(X0, 120, "NEXT 24 HOURS")
         if snap.rain:
-            c.text(X1, 120, rain_summary(snap), 13.5, 450, fill=c.p.text2, anchor="rs")
+            c.text(X1, 120, rain_summary(snap.rain), 13.5, 450, fill=c.p.text2, anchor="rs")
         temp_chart(c, snap)
     else:
         c.caps(X0, 120, "OUTLOOK")

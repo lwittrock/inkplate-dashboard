@@ -5,6 +5,9 @@ in its query string. The service stores the latest report (state.json) and,
 after replying, passes it on: to a Home Assistant webhook (options B) and as
 a healthchecks.io ping (option A). Forwarding runs on a worker thread so the
 device's radio never waits for it.
+
+The report to HA also says when the device is due back and when it is late,
+so HA can tell a late device from a sleeping one without knowing the schedule.
 """
 
 import json
@@ -13,10 +16,16 @@ import queue
 import threading
 import urllib.request
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# Late: this long past the wake the service asked for, or a share of the sleep
+# if that is more. The ESP32's sleep timer drifts a few percent, which over the
+# night's six hours is more than ten minutes.
+LATE_MIN = timedelta(minutes=10)
+LATE_SHARE = 0.05
 
 # LiPo open-circuit voltage to charge, a common single-cell table.
 # The curve is flat in the middle: 3.84 V is still half full.
@@ -97,7 +106,18 @@ class State:
         return date.fromisoformat(self.ota_sent_for) if self.ota_sent_for else None
 
 
-def ha_payload(report: Report, seen: datetime) -> dict:
+def due(seen: datetime, sleep_s: int) -> tuple[datetime, datetime]:
+    """When the device should wake next, and from when it is late. `seen` is
+    aware; the sums run in UTC, since sleep_s is real seconds and adding them
+    to an Amsterdam time would be an hour off across a DST switch."""
+    utc = seen.astimezone(timezone.utc)
+    grace = max(LATE_MIN, timedelta(seconds=round(sleep_s * LATE_SHARE)))
+    wake = utc + timedelta(seconds=sleep_s)
+    return wake.astimezone(seen.tzinfo), (wake + grace).astimezone(seen.tzinfo)
+
+
+def ha_payload(report: Report, seen: datetime, sleep_s: int) -> dict:
+    next_wake, late_after = due(seen, sleep_s)
     return {
         "battery_v": report.batt,
         "battery_pct": battery_percent(report.batt),
@@ -108,6 +128,8 @@ def ha_payload(report: Report, seen: datetime) -> dict:
         "awake_ms": report.awake_ms,
         "wifi_ms": report.wifi_ms,
         "seen_at": seen.isoformat(timespec="seconds"),
+        "next_wake_at": next_wake.isoformat(timespec="seconds"),
+        "late_after": late_after.isoformat(timespec="seconds"),
     }
 
 
@@ -130,9 +152,9 @@ class Forwarder:
         self.q: queue.Queue = queue.Queue(maxsize=100)
         threading.Thread(target=self._run, name="forwarder", daemon=True).start()
 
-    def device_seen(self, report: Report, seen: datetime) -> None:
+    def device_seen(self, report: Report, seen: datetime, sleep_s: int) -> None:
         if self.ha_webhook_url:
-            self._put(self.ha_webhook_url, ha_payload(report, seen))
+            self._put(self.ha_webhook_url, ha_payload(report, seen, sleep_s))
         if self.hc_device_url:
             self._put(self.hc_device_url, None)
 

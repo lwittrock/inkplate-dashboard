@@ -18,7 +18,8 @@ from screen.model import Category
 from screen.nowlog import NowLog
 from screen.service import Service, make_handler
 from screen.sources import FixtureFetcher
-from screen.telemetry import Forwarder, Report, State, battery_percent
+from screen.schedule import TZ, plan
+from screen.telemetry import Forwarder, Report, State, battery_percent, due
 
 FIXTURE = Path(__file__).parent / "fixtures" / "wall1"
 
@@ -70,6 +71,8 @@ def test_a_normal_evening_wake(svc):
     payload = next(body for url, body in sent if "webhook" in url)
     assert payload["battery_v"] == 3.91 and payload["battery_pct"] == 65
     assert payload["seen_at"] == "2026-09-23T21:39:30+02:00"
+    assert payload["next_wake_at"] == "2026-09-23T22:10:30+02:00"      # the X-Sleep above
+    assert payload["late_after"] == "2026-09-23T22:20:30+02:00"        # 10 minutes later
     assert ("https://hc-ping.test/device", None) in sent
     assert State.load(service.state_path).last == {"batt": 3.9, "fw": "v2026.10.02-01", "wake": 5, "fail": 0}
 
@@ -91,6 +94,18 @@ def test_the_night_wake_gets_204_and_one_ota_hint(svc):
     assert status == 204 and "X-Ota" not in headers
     status, _, body = get("/v1/screen?fw=a&wake=42&fail=3")
     assert status == 200 and len(body) == 60_000
+
+
+def test_the_report_says_when_the_device_is_late():
+    seen = datetime(2026, 9, 24, 0, 5, 40, tzinfo=TZ)
+    # The night sleep, 6 h 24 min 50 s: 5% of it (19 min 14 s) beats 10 minutes.
+    assert due(seen, 23090) == (datetime(2026, 9, 24, 6, 30, 30, tzinfo=TZ),
+                                datetime(2026, 9, 24, 6, 49, 44, tzinfo=TZ))
+    # The night of the autumn switch is an hour longer in real seconds, as the schedule gives it.
+    seen = datetime(2026, 10, 25, 0, 5, 40, tzinfo=TZ)
+    sleep_s = plan(seen.replace(tzinfo=None), failing=False, ota_sent_for=None).sleep_s
+    wake, _ = due(seen, sleep_s)
+    assert (sleep_s, wake.isoformat()) == (26690, "2026-10-25T06:30:30+01:00")
 
 
 def test_garbage_in_the_query_string_is_ignored(svc):

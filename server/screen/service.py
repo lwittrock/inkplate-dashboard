@@ -148,7 +148,7 @@ class Service:
                  headers.get("X-Refresh", "-"), len(body), p.sleep_s, " ota" if p.ota else "", " new-fw" if new_firmware else "",
                  report.batt, report.fail)
         # Forwarding is queued, and the queue is served on another thread.
-        self.forwarder.device_seen(report, now.replace(tzinfo=TZ))
+        self.forwarder.device_seen(report, now.replace(tzinfo=TZ), p.sleep_s)
         return status, headers, body
 
     def status(self) -> dict:

@@ -15,12 +15,15 @@ design; this is only what it was drawn from.
 - Rain times are Buienradar's own "HH:MM" labels, for showing, not computing.
   `rain_expected` and `rain_summary` are the wall's own judgment of them
   (weather.rain_summary): whether it draws the rain chart, and its words.
+- A departure's `status` (on_time, delayed, late, cancelled) is trains.status,
+  the same rule the train history's disruptions use; HA colours by it.
 """
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from .model import Category, Departure, Snapshot
+from .trains import status
 from .weather import rain_expected, rain_summary
 
 TZ = ZoneInfo("Europe/Amsterdam")
@@ -49,6 +52,7 @@ def _departure(d: Departure) -> dict:
         "delay_min": d.delay_min,
         "cancelled": d.cancelled,
         "transfer": d.transfer.name.lower(),
+        "status": status(d.delay_min, d.cancelled, d.transfer.name.lower()),
     }
 
 

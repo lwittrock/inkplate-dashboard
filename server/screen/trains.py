@@ -14,6 +14,20 @@ DISRUPTED_DELAY_MIN = 10          # a Centraal train this late is worth replacin
 SUBSTITUTE_WINDOW = timedelta(minutes=10)
 WALK_TIME = timedelta(minutes=5)  # an HS substitute must still be reachable on foot
 LOOKAHEAD = timedelta(hours=3)    # after the last train of the evening, show nothing rather than tomorrow's
+LATE_MIN = 5                      # late from 5 minutes, the Dutch convention
+
+
+def status(delay_min: int, cancelled: bool, transfer: str) -> str:
+    """How a departure is doing, for Home Assistant's colours (/data) and the
+    history's disruptions: "cancelled" when the train or its Breda transfer is,
+    "late" from LATE_MIN minutes or with a late transfer (which is itself 5
+    minutes or more), "delayed" from a minute, else "on_time". `transfer` is
+    the Transfer name in lower case, as /data and history.db hold it."""
+    if cancelled or transfer == "cancelled":
+        return "cancelled"
+    if delay_min >= LATE_MIN or transfer == "late":
+        return "late"
+    return "delayed" if delay_min > 0 else "on_time"
 
 
 def is_disrupted(d: Departure) -> bool:

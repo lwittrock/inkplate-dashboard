@@ -29,7 +29,7 @@ from pathlib import Path
 
 from .data import TZ, stamp
 from .model import Departure
-from .trains import filter_dominated
+from .trains import LATE_MIN, filter_dominated, status
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,6 @@ MIGRATIONS = {
 SCHEMA_VERSION = max(MIGRATIONS)
 
 ORIGINS = {"ns_ctr": "CTR", "ns_hs": "HS"}     # source key -> origin
-LATE_MIN = 5                              # late from 5 minutes, the Dutch convention
 SEEN_BEFORE_LEAVING = timedelta(minutes=10)
 
 
@@ -77,7 +76,7 @@ def counts(row: dict) -> bool:
 
 
 def disrupted(row: dict) -> bool:
-    return bool(row["cancelled"]) or row["delay_min"] >= LATE_MIN or row["transfer"] != "ok"
+    return status(row["delay_min"], bool(row["cancelled"]), row["transfer"]) in ("late", "cancelled")
 
 
 class History:

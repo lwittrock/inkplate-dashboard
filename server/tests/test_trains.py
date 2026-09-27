@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 
 from screen.model import Departure, Transfer
-from screen.trains import ctr_has_disruption, filter_dominated, pick_departures
+from screen.trains import ctr_has_disruption, filter_dominated, pick_departures, status
 
 NOW = datetime(2026, 9, 23, 8, 0)
 
@@ -156,3 +156,11 @@ def test_disruption_check_looks_at_the_first_five_trips():
     assert ctr_has_disruption([])
     assert ctr_has_disruption(clean[:4] + [dep("08:55", "09:55", delay=10)])
     assert not ctr_has_disruption(clean + [dep("08:55", "09:55", cancelled=True)])
+
+
+def test_a_departures_status_colours_home_assistant_and_counts_in_the_history():
+    assert status(0, False, "ok") == "on_time"
+    assert status(1, False, "ok") == status(4, False, "ok") == "delayed"
+    assert status(5, False, "ok") == "late"                  # late from 5 minutes
+    assert status(0, False, "late") == "late"                 # the Breda sprinter is 5+ late
+    assert status(0, True, "ok") == status(3, False, "cancelled") == "cancelled"

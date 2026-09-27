@@ -141,6 +141,7 @@ def test_data_serves_the_last_render_with_offsets(svc):
         ("CTR", "2026-09-23T21:49:00+02:00", "2026-09-23T23:10:00+02:00"),
         ("CTR", "2026-09-23T22:49:00+02:00", "2026-09-24T00:10:00+02:00")]    # after midnight
     assert d["trains"]["ok"] is True and d["trains"]["departures"][0]["transfer"] == "ok"
+    assert {t["status"] for t in d["trains"]["departures"]} == {"on_time"}
     w = d["weather"]
     assert w["now"]["category"] == "overcast"            # what the wall shows, as in /status
     assert len(w["hours"]) == 24 and w["hours"][0]["at"] == "2026-09-23T21:00:00+02:00"

@@ -130,6 +130,8 @@ def test_data_serves_the_last_render_with_offsets(svc):
     assert [x["date"] for x in w["days"]][:2] == ["2026-09-23", "2026-09-24"]
     assert w["days"][0]["name"] == "Today"
     assert {x["category"] for x in w["days"]} <= {c.name.lower() for c in Category}
+    assert {x["category"] for x in w["hours"]} <= {c.name.lower() for c in Category} - {"showers"}
+    assert w["hours"][0]["daylight"] is False and any(x["daylight"] for x in w["hours"])
     assert all(r["time"][2] == ":" for r in w["rain"])
 
     service.snapshot = None

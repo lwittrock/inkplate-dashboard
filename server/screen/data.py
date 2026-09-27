@@ -10,13 +10,15 @@ design; this is only what it was drawn from.
 - A section with no data is null or an empty list, as the renderer treats it.
 - An hour's temperature and cloud are at `at`; its precipitation, snow and
   sun minutes cover the hour before (Open-Meteo's convention, see HourForecast).
+  Its category judges that hour alone (weather.hour_category), so it is never
+  "showers"; `daylight` is false at night, where HA shows clear as clear-night.
 - Rain times are Buienradar's own "HH:MM" labels, for showing, not computing.
 """
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .model import Departure, Snapshot
+from .model import Category, Departure, Snapshot
 
 TZ = ZoneInfo("Europe/Amsterdam")
 
@@ -28,6 +30,10 @@ def stamp(t: datetime | None) -> str | None:
 
 def _one(x: float | None) -> float | None:
     return None if x is None else round(x, 1)
+
+
+def _category(c: Category | None) -> str | None:
+    return None if c is None else c.name.lower()
 
 
 def _departure(d: Departure) -> dict:
@@ -51,15 +57,16 @@ def snapshot_data(snap: Snapshot) -> dict:
             "now": None if w is None else {
                 "temp": _one(w.temp), "feels": _one(w.feels),
                 "wind_kmh": _one(w.wind_kmh), "gust_kmh": _one(w.gust_kmh),
-                "wind_bearing": w.wind_bearing, "category": w.category.name.lower(),
+                "wind_bearing": w.wind_bearing, "category": _category(w.category),
             },
             "rain": [{"time": r.label, "mmh": round(r.mmh, 2)} for r in snap.rain],
             "hours": [{"at": stamp(h.time), "temp": _one(h.temp), "precip_mm": round(h.precip_mm, 1),
                        "snow_cm": round(h.snow_cm, 1), "sun_min": round(h.sun_s / 60),
-                       "cloud_pct": round(h.cloud_pct)} for h in snap.hours],
+                       "cloud_pct": round(h.cloud_pct), "category": _category(h.category),
+                       "daylight": h.daylight} for h in snap.hours],
             "days": [{"date": d.day.isoformat() if d.day else None, "name": d.day_name,
                       "temp_max": d.temp_max, "temp_min": d.temp_min, "feels_max": d.feels_max,
-                      "category": d.category.name.lower(), "sunrise": d.sunrise, "sunset": d.sunset,
+                      "category": _category(d.category), "sunrise": d.sunrise, "sunset": d.sunset,
                       "wind_max_kmh": _one(d.wind_max_kmh), "gust_max_kmh": _one(d.gust_max_kmh),
                       "uv_max": _one(d.uv_max)} for d in snap.forecast],
         },

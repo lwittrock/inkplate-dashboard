@@ -44,35 +44,82 @@ class DayCounts:
                 f"{self.overcast} overcast")
 
 
-def hour_sky(sun_s: float, cloud_pct: float) -> str:
+def hour_sky(sun_s: float, cloud_pct: float, daylight: bool = True) -> str:
     """Sunshine and cloud together: KNMI's model often gives 95-100% cloud and
-    a full hour of sun in the same hour (thin high cloud), which is neither."""
-    if sun_s >= 45 * 60 and cloud_pct < 50:
+    a full hour of sun in the same hour (thin high cloud), which is neither.
+    At night there is no sunshine to weigh, so cloud alone decides, on the
+    same bounds."""
+    if cloud_pct < 50 and (sun_s >= 45 * 60 or not daylight):
         return "clear"
-    if sun_s < 15 * 60 and cloud_pct >= 80:
+    if cloud_pct >= 80 and (sun_s < 15 * 60 or not daylight):
         return "overcast"
     return "partly"
 
 
+# The per-hour tests, shared by the days (count_day) and the hours (hour_category).
+
+def is_wet(h: HourForecast) -> bool:
+    return h.precip_mm >= WET_MM
+
+
+def is_snow(h: HourForecast) -> bool:
+    return h.snow_cm >= SNOW_CM
+
+
+def is_fog(h: HourForecast) -> bool:
+    return h.code in (45, 48)
+
+
+def is_thunder(h: HourForecast) -> bool:
+    return h.code >= 95
+
+
+def is_daylight(h: HourForecast, sunrise: datetime, sunset: datetime) -> bool:
+    """At least half of the hour before `h.time` lies between sunrise and sunset."""
+    lit = min(h.time, sunset) - max(h.time - timedelta(hours=1), sunrise)
+    return lit >= timedelta(minutes=30)
+
+
 def count_day(hours: list[HourForecast], sunrise: datetime, sunset: datetime) -> DayCounts:
     """Counts over one day's window. `hours` may hold other days; the window
-    is taken from sunrise's date. The sky counts only daylight hours: at least
-    half of the hour between sunrise and sunset."""
+    is taken from sunrise's date. The sky counts only daylight hours."""
     day = sunrise.date()
     window = [h for h in hours if h.time.date() == day and FIRST_HOUR <= h.time.hour <= LAST_HOUR]
     sky = {"clear": 0, "partly": 0, "overcast": 0}
     for h in window:
-        lit = min(h.time, sunset) - max(h.time - timedelta(hours=1), sunrise)
-        if lit >= timedelta(minutes=30):
+        if is_daylight(h, sunrise, sunset):
             sky[hour_sky(h.sun_s, h.cloud_pct)] += 1
     return DayCounts(
-        wet=sum(h.precip_mm >= WET_MM for h in window),
+        wet=sum(map(is_wet, window)),
         rain_mm=sum(h.precip_mm for h in window),
-        snow=sum(h.snow_cm >= SNOW_CM for h in window),
-        fog=sum(h.code in (45, 48) for h in window),
-        thunder=sum(h.code >= 95 for h in window),
+        snow=sum(map(is_snow, window)),
+        fog=sum(map(is_fog, window)),
+        thunder=sum(map(is_thunder, window)),
         **sky,
     )
+
+
+# An hour's rain by its amount: the usual intensity bounds, in mm in the hour.
+HOUR_RAIN_MM = 2.5
+HOUR_HEAVY_MM = 7.6
+
+_SKY = {"clear": Category.CLEAR, "partly": Category.PARTLY_CLOUDY, "overcast": Category.OVERCAST}
+
+
+def hour_category(h: HourForecast, daylight: bool) -> Category:
+    """What one hour is like, in the day rules' order: snow, thunder, wet,
+    fog, then the sky. Never showers: that is a day of mixed hours."""
+    if is_snow(h):
+        return Category.SNOW
+    if is_thunder(h):
+        return Category.THUNDERSTORM
+    if is_wet(h):
+        if h.precip_mm >= HOUR_HEAVY_MM:
+            return Category.RAIN_HEAVY
+        return Category.RAIN if h.precip_mm >= HOUR_RAIN_MM else Category.DRIZZLE
+    if is_fog(h):
+        return Category.FOG
+    return _SKY[hour_sky(h.sun_s, h.cloud_pct, daylight)]
 
 
 def _rain(mm: float) -> Category:

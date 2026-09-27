@@ -59,6 +59,26 @@ cloud and a full hour of sunshine in the same hour (thin high cloud). Cloud
 alone called 24 September overcast, sunshine alone called it clear; it was "a
 lot of sun and a bit of cloud", which is partly cloudy.
 
+**Each hour** (since 27 September 2026, for Home Assistant's hourly forecast
+through `/data`; the wall draws no hourly icons) is judged alone, with the same
+per-hour tests (`is_wet`, `is_snow`, `is_fog`, `is_thunder`, `hour_sky` in
+`weather.py`, which the days use too), first match wins:
+
+| # | Result | When |
+|---|---|---|
+| 1 | Snow | a snow hour |
+| 2 | Thunderstorm | a thunder hour |
+| 3 | Drizzle < 2.5 mm, rain < 7.6 mm, else heavy rain | a wet hour |
+| 4 | Fog | a fog hour |
+| 5 | The sky | `hour_sky`; at night on cloud alone: < 50% clear, >= 80% overcast |
+
+An hour is daylight when at least half of it lies between its day's sunrise and
+sunset, as for the days' sky. At night there is no sunshine to weigh, so the
+sky falls back to cloud cover on the same bounds; thin high cloud then reads as
+overcast, the flaw the daytime rule exists to avoid. The rain bounds are the
+common light / moderate / heavy intensity bounds, not fitted to data. Never
+"sun and showers": that describes a day of mixed hours.
+
 ## The sun-and-showers icon
 
 Material Symbols has no sun-with-rain glyph. It is drawn from two we have

@@ -83,6 +83,10 @@ class HourForecast:
     cloud_low_pct: float = 0.0          # the layers, logged with NOW's choice
     cloud_mid_pct: float = 0.0
     cloud_high_pct: float = 0.0
+    # Set by parse_om from its day's sunrise and sunset (weather.hour_category);
+    # None for an hour without them.
+    category: Category | None = None
+    daylight: bool | None = None
 
 
 @dataclass

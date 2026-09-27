@@ -102,6 +102,22 @@ def test_parse_om():
     assert (len(om.hours), om.hours[0].time) == (48, datetime(2026, 9, 23, 0, 0))
 
 
+def test_each_hour_gets_its_category_and_daylight():
+    """om_doc: sun and 10% cloud all day and night; 23 September's sun is up 07:31-19:39."""
+    om = parse_om(om_doc())
+    at = {h.time: h for h in om.hours}
+
+    def seen(h):
+        return at[datetime(2026, 9, 23, h)].daylight, at[datetime(2026, 9, 23, h)].category
+
+    assert seen(8) == (False, Category.CLEAR)       # 07:00-08:00 has 29 lit minutes: night
+    assert seen(9) == (True, Category.CLEAR)
+    assert seen(20) == (True, Category.CLEAR)       # 19:00-20:00 has 39
+    assert seen(21) == (False, Category.CLEAR)
+    assert at[datetime(2026, 9, 24, 0)].daylight is False
+    assert all(h.category is not None for h in om.hours)
+
+
 def test_open_meteo_labels_are_corrected_across_dst():
     """Asked in summer for a day in winter, Open-Meteo still labels it UTC+2."""
     om = parse_om(om_doc(offset_h=2, days=("2026-10-25", "2026-10-26")))

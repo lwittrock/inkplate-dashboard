@@ -7,8 +7,8 @@ import pytest
 from screen.headline import DAYS, greeting
 from screen.model import Category, DayForecast, HourForecast, Station
 from screen.render import Canvas
-from screen.weather import (DayCounts, category_from_icon, clear_sky_wm2, count_day, day_category, hour_sky,
-                            pick_current, sun_elevation)
+from screen.weather import (DayCounts, category_from_icon, clear_sky_wm2, count_day, day_category,
+                            hour_category, hour_sky, pick_current, sun_elevation)
 
 HOME = (52.0799, 4.3133)
 NOW = datetime(2026, 9, 23, 14, 0)
@@ -40,6 +40,34 @@ def test_hour_sky_needs_sunshine_and_cloud_to_agree():
     assert hour_sky(14 * 60, 80) == "overcast"
     assert hour_sky(15 * 60, 100) == "partly"
     assert hour_sky(45 * 60, 49) == "clear"
+
+
+def test_at_night_cloud_alone_decides_the_sky():
+    assert hour_sky(0, 15, daylight=False) == "clear"          # 27 September, 20:00
+    assert hour_sky(0, 49, daylight=False) == "clear"
+    assert hour_sky(0, 50, daylight=False) == "partly"
+    assert hour_sky(0, 79, daylight=False) == "partly"
+    assert hour_sky(0, 80, daylight=False) == "overcast"
+    assert hour_sky(0, 15) == "partly"                         # by day, no sun is not clear
+
+
+@pytest.mark.parametrize("kw, daylight, cat", [
+    # The day rules' order: snow, thunder, wet, fog, sky.
+    (dict(snow=0.1, mm=9.0, code=95), True, Category.SNOW),
+    (dict(snow=0.07, code=95, mm=9.0), True, Category.THUNDERSTORM),     # a trace is not snow
+    (dict(mm=0.3, code=45), True, Category.DRIZZLE),
+    (dict(mm=0.29, code=45), True, Category.FOG),                        # a trace is not wet
+    (dict(mm=2.5), True, Category.RAIN),
+    (dict(mm=7.6), False, Category.RAIN_HEAVY),
+    (dict(code=48, sun=3600, cloud=10), True, Category.FOG),
+    # The sky, by day and by night.
+    (dict(sun=3600, cloud=10), True, Category.CLEAR),
+    (dict(sun=3600, cloud=98), True, Category.PARTLY_CLOUDY),
+    (dict(cloud=10), False, Category.CLEAR),
+    (dict(cloud=100), False, Category.OVERCAST),
+])
+def test_an_hour_is_judged_in_the_day_rules_order(kw, daylight, cat):
+    assert hour_category(hour(datetime(2026, 9, 29, 12), **kw), daylight) == cat
 
 
 def sky(clear=0, partly=0, overcast=0, **kw):

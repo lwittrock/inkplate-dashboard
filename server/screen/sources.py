@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from .config import Settings
 from .model import (Departure, DayForecast, Forecast, HourForecast, RainSample, Station, Transfer,
                     round_half_away)
-from .weather import count_day, day_category, known_icon
+from .weather import count_day, day_category, hour_category, is_daylight, known_icon
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +115,8 @@ def ns_trips_url(from_station: str, to_station: str, max_count: int = 6) -> str:
 
 def parse_om(doc: dict) -> Forecast | None:
     """Hours and days, in local time. A day's category comes from its hours
-    (weather.day_category); each is logged with the counts behind it."""
+    (weather.day_category); each is logged with the counts behind it. Each
+    hour gets its own category and daylight from its day's sunrise and sunset."""
     offset = timedelta(seconds=num(doc.get("utc_offset_seconds")))
     hourly, daily = doc.get("hourly") or {}, doc.get("daily") or {}
 
@@ -138,6 +139,7 @@ def parse_om(doc: dict) -> Forecast | None:
 
     n = len(daily.get("time")) if isinstance(daily.get("time"), list) else 0
     days = {}
+    sun_times = {}
     for tmax, tmin, feels, rise, set_, wind, gust, uv in zip(
             col(daily, "temperature_2m_max", n), col(daily, "temperature_2m_min", n),
             col(daily, "apparent_temperature_max", n), col(daily, "sunrise", n),
@@ -146,6 +148,7 @@ def parse_om(doc: dict) -> Forecast | None:
         sunrise, sunset = om_time(rise, offset), om_time(set_, offset)
         if sunrise is None or sunset is None:
             continue
+        sun_times[sunrise.date()] = (sunrise, sunset)
         if not any(h.time.date() == sunrise.date() for h in hours):
             continue
         counts = count_day(hours, sunrise, sunset)
@@ -164,6 +167,13 @@ def parse_om(doc: dict) -> Forecast | None:
             uv_max=num(uv),
             day=sunrise.date(),
         )
+
+    # The hour stamped 00:00 covers 23:00-24:00, so it takes its own date's
+    # sun times: it is dark either way.
+    for h in hours:
+        if h.time.date() in sun_times:
+            h.daylight = is_daylight(h, *sun_times[h.time.date()])
+            h.category = hour_category(h, h.daylight)
     return Forecast(hours, days) if hours and days else None
 
 

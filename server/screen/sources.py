@@ -273,7 +273,8 @@ def parse_trips(doc: dict, origin: str, max_count: int = 6) -> list[Departure]:
         cancelled = bool(first.get("cancelled") or first.get("partCancelled"))
 
         end = last.get("destination") or {}
-        arrives = local_time(end.get("actualDateTime")) or local_time(end.get("plannedDateTime"))
+        arrives_planned = local_time(end.get("plannedDateTime"))
+        arrives = local_time(end.get("actualDateTime")) or arrives_planned
 
         # The transfer is the last leg: the Breda -> Tilburg Universiteit sprinter.
         if len(legs) == 1:
@@ -295,6 +296,7 @@ def parse_trips(doc: dict, origin: str, max_count: int = 6) -> list[Departure]:
             cancelled=cancelled,
             transfer=transfer,
             leg_count=len(legs),
+            arrives_planned=arrives_planned,
         ))
     return out
 

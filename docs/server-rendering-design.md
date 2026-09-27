@@ -57,8 +57,17 @@ that never touch the device behind glass.
  |       ping healthchecks `inkplate`         |
  |   GET /preview.png  <----------------------+-------- laptop (management set)
  |   GET /data         <----------------------+-------- Home Assistant, every minute
+ |   GET /history/trains  <-------------------+-------- Home Assistant
+ |                                            |
+ | /var/lib/inkplate-screen: state.json,      |
+ |   now.jsonl, history.db (the trains)       |
  +--------------------------------------------+
 ```
+
+Since 27 September 2026 CT 106 is the home's data service rather than only the screen's: the wall
+is one consumer, Home Assistant and Homepage are others, and it keeps a history of the trains. It
+stays one service in one CT until data arrives that the wall does not use (`homeserver-docs`,
+`decisions.md`, Appendix I).
 
 ## The contract
 
@@ -296,8 +305,26 @@ so HA and the wall cannot disagree and the NS key stays in CT 106. The rules for
 which must not be renamed) are in [server/screen/data.py](../server/screen/data.py). It is not
 part of the device's contract, but the same care applies: HA's templates read its field names.
 
-There is no category per hour: the category rules judge a day, and their rain thresholds are
-daily totals. `/data` gives each hour's temperature, precipitation, sun minutes and cloud instead.
+Until 27 September 2026 there was no category per hour, because the category rules judge a day.
+Since then each hour has one from the same per-hour tests, and a daylight flag
+([weather-categories.md](weather-categories.md), "Each hour"), so HA's hourly forecast gets icons
+without copying the rules.
+
+The report to HA's webhook says, since the same day, when the device is due back
+(`next_wake_at`, from the sleep it was just given) and when it counts as late (`late_after`: 10
+minutes later, or 5% of the sleep for the long night sleep). HA compares that with the clock and
+never needs the wake schedule.
+
+### The train history (`/history/trains`)
+
+Added 27 September 2026 for the history page of HA's Trains tab. Every fresh NS answer goes into
+`history.db` (SQLite, in the state directory): one row per train, origin and planned departure,
+last seen values; every Centraal trip, not only the wall's three. The service computes the
+statistics, so HA only shows them: per weekday departure time over 30 days, and the last week's
+disruptions. `/history/trains/rows` gives the rows themselves. The rules (which trains count, late
+from 5 minutes, the versioned schema and why a rollback is safe) are in
+[server/screen/history.py](../server/screen/history.py). The file is the first thing in CT 106
+that git cannot rebuild, so CT 106 is in the server's weekly backup since then.
 
 ### Status line (option C): declined
 

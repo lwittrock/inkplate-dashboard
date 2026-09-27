@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from screen.config import Settings
+from screen.history import History
 from screen.model import Category
 from screen.nowlog import NowLog
 from screen.service import Service, make_handler
@@ -40,7 +41,8 @@ def svc(tmp_path):
                           send=lambda url, body: sent.append((url, body)))
     clock = Clock(datetime(2026, 9, 23, 21, 39, 30))
     service = Service(Settings.from_env(), FixtureFetcher(FIXTURE), forwarder,
-                      tmp_path / "state.json", clock=clock, now_log=NowLog(tmp_path / "now.jsonl"))
+                      tmp_path / "state.json", clock=clock, now_log=NowLog(tmp_path / "now.jsonl"),
+                      history=History(tmp_path / "history.db"))
     service.render_now()
     server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(service))
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -151,6 +153,27 @@ def test_data_serves_the_last_render_with_offsets(svc):
 
     service.snapshot = None
     assert get("/data")[0] == 503
+
+
+def test_every_centraal_trip_goes_into_the_history(svc):
+    service, clock, get, _, _ = svc
+    status, _, body = get("/history/trains/rows?days=2")
+    rows = json.loads(body)
+    # wall1's five Centraal trips, the wall's two and the three it leaves out, and the
+    # four HS trips of the first render, which always asks HS.
+    assert status == 200 and [(r["origin"], r["planned"][11:16]) for r in rows if r["origin"] == "CTR"] == [
+        ("CTR", "21:49"), ("CTR", "22:49"), ("CTR", "04:44"), ("CTR", "05:49"), ("CTR", "06:19")]
+    assert json.loads(get("/status")[2])["history"] == {"trains": 9, "since": "2026-09-23T21:49:00+02:00"}
+
+    clock.t = datetime(2026, 9, 24, 12, 0)
+    status, _, body = get("/history/trains?days=nonsense")
+    s = json.loads(body)
+    assert (status, s["days"], s["late_min"]) == (200, 30, 5)
+    # Seen at 21:39 only: 21:49 counts (10 minutes before), 22:49 does not.
+    assert [(r["time"], r["trains"]) for r in s["by_departure"]] == [("21:49", 1)]
+
+    service.history = None
+    assert get("/history/trains")[0] == 503 and json.loads(get("/status")[2])["history"] is None
 
 
 def test_now_log_serves_each_renders_choice(svc):

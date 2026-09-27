@@ -5,7 +5,8 @@
 Uses only what the server has (Pillow, no pytest, no network): renders every
 recorded fixture and a synthetic screen that exercises every section in both
 panel modes, checks every wire format survives compression at its exact size,
-and asks the schedule for a whole week of wakes. Exit code
+records the fixtures' trains in an in-memory history (so SQLite works on this
+Python), and asks the schedule for a whole week of wakes. Exit code
 0 means the release may be switched to; anything else keeps the old one.
 """
 
@@ -17,6 +18,7 @@ from datetime import datetime, timedelta
 from . import frames, render
 from .collect import Collector
 from .config import SERVER_DIR, Settings
+from .history import History
 from .model import (Category, Departure, DayForecast, RainSample, Snapshot, Transfer,
                     WeatherNow)
 from .schedule import plan
@@ -59,12 +61,17 @@ def _synthetic(hour: int) -> Snapshot:
 def main() -> int:
     settings = Settings.from_env()
     checked = []
+    history = History(":memory:")
 
     for folder in sorted((SERVER_DIR / "tests" / "fixtures").glob("*/")):
         now = datetime.fromisoformat(json.loads((folder / "meta.json").read_text())["now"])
-        snap = Collector(settings, FixtureFetcher(folder)).snapshot(now)
+        snap = Collector(settings, FixtureFetcher(folder), on_fresh=history.on_fresh).snapshot(now)
         _check_frame(f"fixture {folder.name}", snap)
         checked.append(folder.name)
+        if history.trains_summary(now) is None:
+            raise AssertionError("history: SQLite does not work here")
+    if checked and not history.recorded()["trains"]:
+        raise AssertionError("history: the fixtures' trains were not recorded")
 
     for hour in (9, 21):
         _check_frame(f"synthetic {hour}:05", _synthetic(hour))
@@ -77,7 +84,7 @@ def main() -> int:
             raise AssertionError(f"schedule: {t} gives {s} s")
         t += timedelta(minutes=7)
 
-    print(f"selftest: ok (fixtures: {', '.join(checked) or 'none'}; synthetic; empty; schedule)")
+    print(f"selftest: ok (fixtures: {', '.join(checked) or 'none'}; synthetic; empty; history; schedule)")
     return 0
 
 

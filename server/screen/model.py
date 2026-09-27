@@ -44,6 +44,7 @@ class Departure:
     cancelled: bool
     transfer: Transfer
     leg_count: int
+    arrives_planned: datetime | None = None     # at Tilburg Universiteit, for the history's arrival delay
 
     @property
     def time(self) -> str:

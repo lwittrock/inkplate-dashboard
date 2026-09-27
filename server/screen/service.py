@@ -15,6 +15,9 @@ Endpoints:
     GET /now-log?days=7   NOW's choices of the last days, one JSON line per render
     GET /data          the last render's weather and trains as JSON, for Home
                        Assistant's dashboards (see data.py); 503 before the first
+    GET /history/trains?days=30   the train history's statistics, for Home
+                       Assistant's history page (see history.py); 503 when it is off
+    GET /history/trains/rows?days=7   the rows themselves, oldest first
 
 The contract is described in docs/server-rendering-design.md. Change it only
 backward-compatibly: the service deploys in minutes, the device after midnight.
@@ -38,6 +41,7 @@ from . import frames, render, schedule
 from .collect import Collector
 from .config import SERVER_DIR, Settings, load_env_file
 from .data import snapshot_data
+from .history import History
 from .model import NowChoice, Snapshot
 from .nowlog import KEEP, NowLog
 from .sources import FixtureFetcher, LiveFetcher
@@ -54,9 +58,9 @@ def wall_clock() -> datetime:
 class Service:
     def __init__(self, settings: Settings, fetcher, forwarder: Forwarder, state_path: Path,
                  clock: Callable[[], datetime] = wall_clock, hc_render_url: str = "",
-                 now_log: NowLog | None = None) -> None:
+                 now_log: NowLog | None = None, history: History | None = None) -> None:
         self.settings = settings
-        self.collector = Collector(settings, fetcher)
+        self.collector = Collector(settings, fetcher, on_fresh=self._fresh)
         self.forwarder = forwarder
         self.state_path = state_path
         self.state = State.load(state_path)
@@ -69,8 +73,13 @@ class Service:
         self.now_log = now_log
         self.now_choice: NowChoice | None = None
         self.snapshot: Snapshot | None = None
+        self.history = history
 
     # --- rendering ------------------------------------------------------------
+
+    def _fresh(self, key: str, value, now: datetime) -> None:
+        if self.history:
+            self.history.on_fresh(key, value, now)
 
     def render_now(self) -> None:
         now = self.clock()
@@ -152,6 +161,7 @@ class Service:
         return status, headers, body
 
     def status(self) -> dict:
+        history = self.history.recorded() if self.history else None
         with self.lock:
             c = self.now_choice
             return {
@@ -164,6 +174,7 @@ class Service:
                     "shown": c.shown.name.lower().replace("_", " "),
                     "vote": c.vote.name.lower().replace("_", " "),
                     "why": str(c)},
+                "history": history,
             }
 
     def data(self) -> dict | None:
@@ -171,6 +182,15 @@ class Service:
             snap = self.snapshot
         # A snapshot is not changed after its render, so it needs no lock to read.
         return None if snap is None else snapshot_data(snap)
+
+    def trains_history(self, days: int) -> dict | None:
+        return self.history.trains_summary(self.clock(), days) if self.history else None
+
+    def train_rows(self, days: int) -> list[dict] | None:
+        if not self.history:
+            return None
+        now = self.clock()
+        return self.history.train_rows(now - timedelta(days=days), now + timedelta(days=1))
 
     def now_log_since(self, days: int) -> bytes:
         if not self.now_log:
@@ -201,13 +221,25 @@ def make_handler(service: Service):
                 else:
                     self._reply(200, "application/json", json.dumps(data, indent=1).encode())
             elif url.path == "/now-log":
-                try:
-                    days = min(max(int(parse_qs(url.query).get("days", ["7"])[0]), 1), KEEP.days)
-                except ValueError:
-                    days = 7
-                self._reply(200, "application/x-ndjson", service.now_log_since(days))
+                self._reply(200, "application/x-ndjson",
+                            service.now_log_since(self._days(url, 7, KEEP.days)))
+            elif url.path in ("/history/trains", "/history/trains/rows"):
+                if url.path == "/history/trains":
+                    body = service.trains_history(self._days(url, 30, 366))
+                else:
+                    body = service.train_rows(self._days(url, 7, 366))
+                if body is None:
+                    self._reply(503, "text/plain", b"history is off, see the journal\n")
+                else:
+                    self._reply(200, "application/json", json.dumps(body, indent=1).encode())
             else:
                 self._reply(404, "text/plain", b"not found\n")
+
+        def _days(self, url, default: int, most: int) -> int:
+            try:
+                return min(max(int(parse_qs(url.query).get("days", [str(default)])[0]), 1), most)
+            except ValueError:
+                return default
 
         def _reply(self, status: int, ctype: str, body: bytes, headers: dict | None = None) -> None:
             self.send_response(status)
@@ -249,8 +281,11 @@ def main() -> None:
     state_dir = Path(env("STATE_DIRECTORY", str(SERVER_DIR / "state")))   # systemd sets STATE_DIRECTORY
     state_dir.mkdir(parents=True, exist_ok=True)
     forwarder = Forwarder(ha_webhook_url=env("HA_WEBHOOK_URL", ""), hc_device_url=env("HC_PING_INKPLATE", ""))
+    # A replayed fixture or a pretend clock would write trains that never ran.
+    history = History(":memory:" if args.fixture or args.at else state_dir / "history.db")
     service = Service(settings, fetcher, forwarder, state_dir / "state.json", clock=clock,
-                      hc_render_url=env("HC_PING_RENDER", ""), now_log=NowLog(state_dir / "now.jsonl"))
+                      hc_render_url=env("HC_PING_RENDER", ""), now_log=NowLog(state_dir / "now.jsonl"),
+                      history=history)
 
     service.render_now()   # never serve "no frame yet"
     threading.Thread(target=service.render_loop, name="render", daemon=True).start()

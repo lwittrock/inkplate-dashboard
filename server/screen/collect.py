@@ -10,7 +10,7 @@ shows a disruption.
 import logging
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from . import sources, trains
 from .config import Settings
@@ -71,6 +71,9 @@ class Collector:
     settings: Settings
     fetcher: Any
     cache: dict[str, _Entry] = field(default_factory=dict)
+    # Called with (key, parsed value, now) for each fresh answer, never for a
+    # cached copy: the service records the trains through it.
+    on_fresh: Callable[[str, Any, datetime], None] | None = None
 
     def _get(self, key: str, now: datetime, *, force: bool = False):
         """Parsed value for `key`, or None."""
@@ -83,13 +86,18 @@ class Collector:
             if not value:
                 # As in the firmware: nothing parsed counts as a failure.
                 raise sources.FetchError("empty response")
-            self.cache[key] = _Entry(value, now)
-            return value
         except Exception as exc:
             log.warning("%s: fetch failed: %s", key, exc)
             if entry is not None and now - entry.fetched_at < max_age:
                 return entry.value
             return None
+        self.cache[key] = _Entry(value, now)
+        if self.on_fresh:
+            try:
+                self.on_fresh(key, value, now)
+            except Exception:
+                log.exception("%s: on_fresh failed", key)     # never costs the frame
+        return value
 
     def snapshot(self, now: datetime) -> Snapshot:
         s = self.settings

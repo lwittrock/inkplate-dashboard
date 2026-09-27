@@ -35,6 +35,7 @@ def test_parse_trips():
     a, b, c, d = parse_trips(doc, "CTR")
     assert (a.time, a.delay_min, a.uni_arr, a.transfer, a.leg_count) == ("08:22", 12, "09:21", Transfer.OK, 2)
     assert a.planned == datetime(2026, 9, 23, 8, 10)
+    assert (a.arrives_planned, a.arrives) == (datetime(2026, 9, 23, 9, 20), datetime(2026, 9, 23, 9, 21))
     assert (b.time, b.cancelled, b.delay_min, b.uni_arr) == ("08:40", True, 0, "09:50")
     assert c.transfer == Transfer.LATE           # Breda sprinter 6 minutes late
     assert d.transfer == Transfer.CANCELLED

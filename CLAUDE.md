@@ -4,7 +4,7 @@
 
 E-paper weather + train dashboard on an **Inkplate 6** (ESP32, 800×600 1-bit e-ink), mounted behind glass on the wall. Since the thin client (design: [docs/server-rendering-design.md](docs/server-rendering-design.md)) the work is split in two:
 
-- **The server** (`server/`, Python, runs in CT 106 on the home server at `192.168.1.212`) fetches weather and trains, runs the train picker and the Buienradar vote, draws the whole 800×600 frame every 5 minutes, and decides when the device wakes next.
+- **The server** (`server/`, Python, runs in CT 106 on the home server at `192.168.1.212`) fetches weather and trains, runs the train picker and the Buienradar vote, draws the whole 800×600 frame every 5 minutes, and decides when the device wakes next. Since 27 September 2026 it is the home's data service, with the wall as one consumer: Home Assistant reads the same data (`/data`) and a train history the service keeps (`history.py`, `/history/trains`). Each rule lives once, here; HA only displays.
 - **The firmware** (`*.ino`, about 300 lines) wakes, connects Wi-Fi, makes **one plain-HTTP request** on the LAN, draws the frame it gets, and deep-sleeps for as long as the reply says. The request reports battery, firmware and Wi-Fi signal, which the server forwards to Home Assistant and healthchecks.io.
 
 **Location:** Delft / Den Haag, Netherlands. **Trains:** Den Haag Centraal (GVC) and Den Haag HS (GV) to Tilburg Universiteit (TBU); see "Train picker policy" below.
@@ -47,7 +47,7 @@ No NTP, no clock, no night mode, no cadence rules on the device: the server's sc
 
 **Failure path** (`failedWake`): the first failure changes nothing on the panel (e-ink keeps its picture) and retries in 10 minutes; from the second, the panel says "No Wi-Fi" or "Server down" (drawn once, full refresh); retries back off to 30, then 60 minutes. The server answers a device reporting `fail > 0` with a full redraw, even at night.
 
-**Server** (`server/`, see [server/README.md](server/README.md)): `screen/sources.py` (the APIs), `collect.py` (per-source caching), `trains.py`, `weather.py`, `headline.py`, `render.py` (the design, for the greyscale and 1-bit panel modes) + `frames.py` (the wire formats), `schedule.py` (wake cadence), `telemetry.py`, `nowlog.py` (NOW's choices, for evaluation), `service.py` (HTTP on 8088). Deploys itself from `master` when `server/` changes, after a self-test.
+**Server** (`server/`, see [server/README.md](server/README.md)): `screen/sources.py` (the APIs), `collect.py` (per-source caching), `trains.py`, `weather.py`, `headline.py`, `render.py` (the design, for the greyscale and 1-bit panel modes) + `frames.py` (the wire formats), `schedule.py` (wake cadence), `telemetry.py`, `nowlog.py` (NOW's choices, for evaluation), `history.py` (the trains, in SQLite), `data.py` (`/data` for HA), `service.py` (HTTP on 8088). Deploys itself from `master` when `server/` changes, after a self-test.
 
 ---
 

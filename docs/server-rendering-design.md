@@ -310,6 +310,11 @@ Since then each hour has one from the same per-hour tests, and a daylight flag
 ([weather-categories.md](weather-categories.md), "Each hour"), so HA's hourly forecast gets icons
 without copying the rules.
 
+Also since 27 September, for the same reason: the rain's judgment as the wall makes it
+(`rain_expected`, whether the rain chart is drawn, and `rain_summary`, its words, from
+`weather.py`), and each departure's `status` (`on_time`, `delayed`, `late`, `cancelled`, from
+`trains.status`), which HA colours green, yellow or red and the train history's "late" shares.
+
 The report to HA's webhook says, since the same day, when the device is due back
 (`next_wake_at`, from the sleep it was just given) and when it counts as late (`late_after`: 10
 minutes later, or 5% of the sleep for the long night sleep). HA compares that with the clock and

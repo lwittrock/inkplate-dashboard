@@ -19,6 +19,9 @@
 //   - while the server is unreachable: on the second failed wake, then every
 //     12 hours of sleep. OTA must never depend on the server, or a release
 //     that broke the server request could never be replaced over the air.
+//
+// Release v2026.10.11-01 changed only this paragraph: it was pushed to test
+// the X-Ota path for real, which the bench session of 2026-09-24 skipped.
 
 #include <HTTPUpdate.h>
 #include <esp_ota_ops.h>
